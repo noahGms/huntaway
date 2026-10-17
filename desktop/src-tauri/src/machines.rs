@@ -169,6 +169,9 @@ impl Machines {
 
     pub fn connect(self: &Arc<Self>, record: MachineRecord, token: String) {
         let client = Client::new(record.addresses.clone(), token);
+        // Also called from `setup`, on the main thread, outside the runtime.
+        let runtime = tauri::async_runtime::handle();
+        let _guard = runtime.inner().enter();
         let (handle, mut rx) = stream::spawn(client.clone());
         let id = record.machine_id.clone();
         let machine = Machine {
