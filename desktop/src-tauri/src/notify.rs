@@ -1,6 +1,7 @@
-//! Native notifications. On macOS they carry actions: « Approuver » /
-//! « Refuser » for a permission prompt, and a click opens the conversation.
-//! Elsewhere (or if macOS refuses), the Tauri notification plugin is used.
+//! Native notifications with actions: « Approuver » / « Refuser » for a
+//! permission prompt, and a click opens the conversation. macOS goes through
+//! NSUserNotification, Linux through freedesktop notifications (D-Bus);
+//! elsewhere, or if the system refuses, the Tauri notification plugin is used.
 
 use huntaway_api::{AgentView, Notification};
 use huntaway_client::Client;
@@ -64,17 +65,43 @@ fn open_conversation(app: &AppHandle, machine_id: &str, agent_id: &str) {
 }
 
 pub fn show(p: Pending) {
-    #[cfg(target_os = "macos")]
-    {
-        std::thread::spawn(move || {
-            if let Err(fallback) = show_macos(&p) {
-                tracing::debug!(error = %fallback, "notification macOS impossible, repli sur le plugin");
-                show_plugin(&p);
-            }
-        });
+    // Waiting for the user's answer blocks: one thread per notification.
+    std::thread::spawn(move || {
+        if let Err(fallback) = show_native(&p) {
+            tracing::debug!(error = %fallback, "notification native impossible, repli sur le plugin");
+            show_plugin(&p);
+        }
+    });
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn show_native(_: &Pending) -> Result<(), String> {
+    Err("pas de notifications à actions sur ce système".into())
+}
+
+#[cfg(target_os = "linux")]
+fn show_native(p: &Pending) -> Result<(), String> {
+    let body = format!("{} · {}", p.machine_name, p.notification.body);
+    let mut n = notify_rust::Notification::new();
+    n.appname("Huntaway").summary(&p.notification.title).body(&body).action("default", "Ouvrir");
+    if p.approve.is_some() {
+        n.action("approve", "Approuver").action("deny", "Refuser");
     }
-    #[cfg(not(target_os = "macos"))]
-    show_plugin(&p);
+    if p.sound {
+        n.sound_name("message-new-instant");
+    }
+    let handle = n.show().map_err(|e| e.to_string())?;
+    let mut response = Response::Dismissed;
+    handle.wait_for_action(|action| {
+        response = match action {
+            "approve" => Response::MainButton,
+            "deny" => Response::CloseButton,
+            "default" => Response::Click,
+            _ => Response::Dismissed,
+        }
+    });
+    run(p, action_for(response, p.approve));
+    Ok(())
 }
 
 /// Carries out the action chosen in a notification.
@@ -120,7 +147,7 @@ fn show_plugin(p: &Pending) {
 }
 
 #[cfg(target_os = "macos")]
-fn show_macos(p: &Pending) -> Result<(), String> {
+fn show_native(p: &Pending) -> Result<(), String> {
     use mac_notification_sys::{MainButton, NotificationResponse};
     static APP: std::sync::Once = std::sync::Once::new();
     APP.call_once(|| {
