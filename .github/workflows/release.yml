@@ -1,0 +1,110 @@
+name: Release
+
+# Push a tag `v0.1.0` → GitHub release with the huntawayd binaries, install.sh,
+# the Android APK, the macOS desktop app (+ signed updater artifacts and
+# latest.json) and SHA256SUMS. install.sh downloads from the latest release.
+#
+# Desktop secrets: TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD) sign updates;
+# APPLE_* (optional) sign and notarize the app.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+      - uses: mlugg/setup-zig@v2
+      - run: cargo install cargo-zigbuild --locked
+      - working-directory: bridge
+        run: |
+          cargo zigbuild --release -p huntawayd --target x86_64-unknown-linux-musl
+          cargo zigbuild --release -p huntawayd --target aarch64-unknown-linux-musl
+      - run: |
+          mkdir -p out
+          cp bridge/target/x86_64-unknown-linux-musl/release/huntawayd out/huntawayd-linux-x86_64
+          cp bridge/target/aarch64-unknown-linux-musl/release/huntawayd out/huntawayd-linux-arm64
+      - uses: actions/upload-artifact@v4
+        with: { name: linux, path: out }
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - working-directory: bridge
+        run: cargo build --release -p huntawayd
+      - run: mkdir -p out && cp bridge/target/release/huntawayd out/huntawayd-macos-arm64
+      - uses: actions/upload-artifact@v4
+        with: { name: macos, path: out }
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable }
+      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+      - working-directory: app
+        run: flutter build apk --release --target-platform android-arm64
+      - run: mkdir -p out && cp app/build/app/outputs/flutter-apk/app-release.apk out/huntaway-android-arm64.apk
+      - uses: actions/upload-artifact@v4
+        with: { name: android, path: out }
+
+  desktop:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - working-directory: desktop
+        run: npm ci
+      - working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          npx tauri build --config "{\"version\":\"$version\",\"bundle\":{\"createUpdaterArtifacts\":true}}"
+      - run: |
+          mkdir -p out
+          b=desktop/src-tauri/target/release/bundle
+          cp $b/dmg/*.dmg out/huntaway-desktop-macos-arm64.dmg
+          cp $b/macos/Huntaway.app.tar.gz out/huntaway-desktop-macos-arm64.app.tar.gz
+          sig=$(cat $b/macos/Huntaway.app.tar.gz.sig)
+          version="${GITHUB_REF_NAME#v}"
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/huntaway-desktop-macos-arm64.app.tar.gz"
+          jq -n --arg v "$version" --arg sig "$sig" --arg url "$url" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{version: $v, pub_date: $date, platforms: {"darwin-aarch64": {signature: $sig, url: $url}}}' > out/latest.json
+      - uses: actions/upload-artifact@v4
+        with: { name: desktop, path: out }
+
+  release:
+    needs: [linux, macos, android, desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: out, merge-multiple: true }
+      - run: |
+          cp install.sh out/
+          cd out && sha256sum huntaway* > SHA256SUMS
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" out/* --title "$GITHUB_REF_NAME" --generate-notes
