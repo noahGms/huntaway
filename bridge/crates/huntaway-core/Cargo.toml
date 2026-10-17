@@ -1,0 +1,11 @@
+[package]
+name = "huntaway-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Normalized Huntaway model and agent transcript adapters"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+huntaway-api.workspace = true

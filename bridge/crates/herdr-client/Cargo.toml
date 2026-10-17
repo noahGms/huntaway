@@ -1,0 +1,12 @@
+[package]
+name = "herdr-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Minimal async client for the Herdr socket API"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

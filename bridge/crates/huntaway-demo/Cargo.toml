@@ -1,0 +1,14 @@
+[package]
+name = "huntaway-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Phase 0 spike CLI: watch and drive Herdr agents from outside"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+herdr-client.workspace = true
+huntaway-core.workspace = true

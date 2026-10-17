@@ -1,0 +1,15 @@
+[package]
+name = "huntaway-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Types of the huntawayd HTTP/WebSocket contract, shared by the daemon and its clients"
+
+[features]
+# Derives TypeScript bindings (`cargo test -p huntaway-api --features ts export_bindings`).
+ts = ["dep:ts-rs"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+ts-rs = { version = "10", optional = true, features = ["serde-json-impl", "no-serde-warnings"] }
