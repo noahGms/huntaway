@@ -7,7 +7,7 @@ cd "$(dirname "$0")/../bridge"
 cargo build --release -p huntawayd
 mkdir -p "$HOME/.local/bin"
 install -m 755 target/release/huntawayd "$HOME/.local/bin/huntawayd"
-echo "✓ huntawayd installé dans ~/.local/bin"
+echo "✓ huntawayd installed in ~/.local/bin"
 
 if [[ "${1:-}" != "--no-service" ]]; then
   "$HOME/.local/bin/huntawayd" service install --start
@@ -16,4 +16,4 @@ fi
 
 "$HOME/.local/bin/huntawayd" status
 echo
-echo "Ensuite : huntawayd pair   (puis scanne le QR code avec l'app)"
+echo "Next: huntawayd pair   (then scan the QR code with the app)"

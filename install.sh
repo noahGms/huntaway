@@ -18,22 +18,22 @@ for arg in "$@"; do
   case "$arg" in
     --pair) PAIR=1 ;;
     --no-service) SERVICE=0 ;;
-    *) echo "option inconnue : $arg" >&2; exit 2 ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
 
 say() { printf '%s\n' "$*"; }
-fail() { printf 'erreur : %s\n' "$*" >&2; exit 1; }
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 case "$(uname -s)" in
   Linux) os=linux ;;
   Darwin) os=macos ;;
-  *) fail "système non pris en charge : $(uname -s)" ;;
+  *) fail "unsupported system: $(uname -s)" ;;
 esac
 case "$(uname -m)" in
   x86_64 | amd64) arch=x86_64 ;;
   aarch64 | arm64) arch=arm64 ;;
-  *) fail "architecture non prise en charge : $(uname -m)" ;;
+  *) fail "unsupported architecture: $(uname -m)" ;;
 esac
 asset="huntawayd-$os-$arch"
 
@@ -42,37 +42,37 @@ if command -v curl >/dev/null 2>&1; then
 elif command -v wget >/dev/null 2>&1; then
   fetch() { wget -qO "$2" "$1"; }
 else
-  fail "curl ou wget est nécessaire"
+  fail "curl or wget is required"
 fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-say "→ téléchargement de $asset"
-fetch "$BASE_URL/$asset" "$tmp/huntawayd" || fail "téléchargement impossible : $BASE_URL/$asset"
-fetch "$BASE_URL/SHA256SUMS" "$tmp/SHA256SUMS" || fail "téléchargement impossible : $BASE_URL/SHA256SUMS"
+say "→ downloading $asset"
+fetch "$BASE_URL/$asset" "$tmp/huntawayd" || fail "download failed: $BASE_URL/$asset"
+fetch "$BASE_URL/SHA256SUMS" "$tmp/SHA256SUMS" || fail "download failed: $BASE_URL/SHA256SUMS"
 
 expected=$(awk -v f="$asset" '$2 == f || $2 == "*"f { print $1 }' "$tmp/SHA256SUMS")
-[ -n "$expected" ] || fail "$asset absent de SHA256SUMS"
+[ -n "$expected" ] || fail "$asset missing from SHA256SUMS"
 if command -v sha256sum >/dev/null 2>&1; then
   actual=$(sha256sum "$tmp/huntawayd" | awk '{ print $1 }')
 else
   actual=$(shasum -a 256 "$tmp/huntawayd" | awk '{ print $1 }')
 fi
-[ "$expected" = "$actual" ] || fail "somme de contrôle incorrecte pour $asset"
-say "✓ somme de contrôle vérifiée"
+[ "$expected" = "$actual" ] || fail "checksum mismatch for $asset"
+say "✓ checksum verified"
 
 mkdir -p "$BIN_DIR"
 install -m 755 "$tmp/huntawayd" "$BIN_DIR/huntawayd"
-say "✓ huntawayd installé dans $BIN_DIR"
+say "✓ huntawayd installed in $BIN_DIR"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
-  *) say "  (ajoute $BIN_DIR à ton PATH pour lancer huntawayd directement)" ;;
+  *) say "  (add $BIN_DIR to your PATH to run huntawayd directly)" ;;
 esac
 hd="$BIN_DIR/huntawayd"
 
 if ! command -v herdr >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/herdr" ]; then
-  say "⚠ Herdr introuvable : installe-le (https://herdr.dev) pour que huntawayd voie tes agents"
+  say "⚠ Herdr not found: install it (https://herdr.dev) so huntawayd can see your agents"
 fi
 
 if [ "$SERVICE" = 1 ]; then
@@ -82,7 +82,7 @@ if [ "$SERVICE" = 1 ]; then
     # Keep the service running after logout.
     if [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != yes ]; then
       loginctl enable-linger "$(id -un)" 2>/dev/null || sudo -n loginctl enable-linger "$(id -un)" 2>/dev/null ||
-        say "⚠ lance « sudo loginctl enable-linger $(id -un) » pour garder huntawayd actif après déconnexion"
+        say "⚠ run 'sudo loginctl enable-linger $(id -un)' to keep huntawayd running after logout"
     fi
   fi
   # Reinstalling restarts it with the new binary.
@@ -98,5 +98,5 @@ if [ "$PAIR" = 1 ]; then
   "$hd" pair
 else
   say
-  say "Ensuite : $hd pair   (puis scanne le QR code dans l'app Huntaway)"
+  say "Next: $hd pair   (then scan the QR code in the Huntaway app)"
 fi
