@@ -1,0 +1,75 @@
+// Navigation and transient UI state.
+
+import { create } from "zustand";
+
+export type View = "conversations" | "servers" | "history" | "settings";
+export type PanelTab = "activity" | "files" | "terminal";
+
+export interface Toast {
+  id: number;
+  kind: "info" | "error" | "success";
+  text: string;
+}
+
+interface UiState {
+  view: View;
+  selected: string | null;
+  panelTab: PanelTab;
+  showSidebar: boolean;
+  showPanel: boolean;
+  paletteOpen: boolean;
+  newSession: { open: boolean; machineId?: string; workspace?: string };
+  pair: { open: boolean; link?: string };
+  machineFilter: string | null;
+  toasts: Toast[];
+  /** Focused diff in the Files tab. */
+  focusedFile: string | null;
+  setView: (v: View) => void;
+  select: (key: string | null) => void;
+  setPanelTab: (t: PanelTab) => void;
+  toggleSidebar: () => void;
+  togglePanel: () => void;
+  setPalette: (open: boolean) => void;
+  openNewSession: (opts?: { machineId?: string; workspace?: string }) => void;
+  closeNewSession: () => void;
+  openPair: (link?: string) => void;
+  closePair: () => void;
+  setMachineFilter: (id: string | null) => void;
+  toast: (text: string, kind?: Toast["kind"]) => void;
+  dismiss: (id: number) => void;
+  focusFile: (path: string | null) => void;
+}
+
+let toastId = 0;
+
+export const useUi = create<UiState>((set) => ({
+  view: "conversations",
+  selected: null,
+  panelTab: "activity",
+  showSidebar: true,
+  showPanel: true,
+  paletteOpen: false,
+  newSession: { open: false },
+  pair: { open: false },
+  machineFilter: null,
+  toasts: [],
+  focusedFile: null,
+  setView: (view) => set({ view }),
+  select: (selected) => set({ selected, view: "conversations", focusedFile: null }),
+  setPanelTab: (panelTab) => set({ panelTab, showPanel: true }),
+  toggleSidebar: () => set((s) => ({ showSidebar: !s.showSidebar })),
+  togglePanel: () => set((s) => ({ showPanel: !s.showPanel })),
+  setPalette: (paletteOpen) => set({ paletteOpen }),
+  openNewSession: (opts) => set({ newSession: { open: true, ...opts } }),
+  closeNewSession: () => set({ newSession: { open: false } }),
+  openPair: (link) => set({ pair: { open: true, link } }),
+  closePair: () => set({ pair: { open: false } }),
+  setMachineFilter: (machineFilter) => set({ machineFilter }),
+  toast: (text, kind = "info") => {
+    const id = ++toastId;
+    set((s) => ({ toasts: [...s.toasts, { id, kind, text }] }));
+    setTimeout(() => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), kind === "error" ? 6000 : 3500);
+  },
+  dismiss: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+  focusFile: (focusedFile) => set({ focusedFile, panelTab: "files", showPanel: true }),
+}));

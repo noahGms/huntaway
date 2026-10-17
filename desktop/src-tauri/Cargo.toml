@@ -1,0 +1,41 @@
+[package]
+name = "huntaway-desktop"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Huntaway Desktop: pilote tous tes agents Herdr, en local comme sur tes serveurs"
+
+[lib]
+name = "huntaway_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+huntaway-api = { path = "../../bridge/crates/huntaway-api" }
+huntaway-client = { path = "../../bridge/crates/huntaway-client" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+keyring = { version = "3", features = ["apple-native", "linux-native"] }
+base64 = "0.22"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mac-notification-sys = "0.6"
