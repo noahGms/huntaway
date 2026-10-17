@@ -4,7 +4,8 @@
 /dist/
 
 # Documents de travail : restent en local, jamais dans le dépôt.
-/*.md
+/PRD*.md
+/TODO*.md
 /docs/
 /image.png
 /app/README.md
