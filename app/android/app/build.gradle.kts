@@ -30,11 +30,24 @@ android {
         versionName = flutter.versionName
     }
 
+    // Release builds are signed with the Huntaway key when HUNTAWAY_KEYSTORE is
+    // set (CI): every release must share it, or Android refuses the update.
+    // Without it (local builds), the debug key.
+    val keystore = System.getenv("HUNTAWAY_KEYSTORE")?.takeIf { it.isNotEmpty() }
+    signingConfigs {
+        if (keystore != null) {
+            create("release") {
+                storeFile = file(keystore)
+                storePassword = System.getenv("HUNTAWAY_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("HUNTAWAY_KEY_ALIAS") ?: "huntaway"
+                keyPassword = System.getenv("HUNTAWAY_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (keystore != null) "release" else "debug")
         }
     }
 }

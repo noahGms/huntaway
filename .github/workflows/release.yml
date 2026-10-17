@@ -6,6 +6,8 @@ name: Release
 #
 # Desktop secrets: TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD) sign updates;
 # APPLE_* (optional) sign and notarize the app.
+# Android secrets: ANDROID_KEYSTORE (base64 .jks) + ANDROID_KEYSTORE_PASSWORD
+# sign the APK; required, so that each release installs over the previous one.
 on:
   push:
     tags: ["v*"]
@@ -54,8 +56,20 @@ jobs:
       - uses: subosito/flutter-action@v2
         with: { channel: stable }
       - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
-      - working-directory: app
-        run: flutter build apk --release --target-platform android-arm64
+      - name: Build signed APK
+        working-directory: app
+        env:
+          ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          HUNTAWAY_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          [ -n "$ANDROID_KEYSTORE" ] || { echo "::error::ANDROID_KEYSTORE secret missing"; exit 1; }
+          export HUNTAWAY_KEYSTORE="$RUNNER_TEMP/huntaway.jks"
+          echo "$ANDROID_KEYSTORE" | base64 -d > "$HUNTAWAY_KEYSTORE"
+          # v1.2.3 → versionName 1.2.3, versionCode 10203 (always increasing).
+          version="${GITHUB_REF_NAME#v}"
+          IFS=. read -r major minor patch <<< "${version%%-*}"
+          code=$((major * 10000 + minor * 100 + patch))
+          flutter build apk --release --target-platform android-arm64 --build-name "$version" --build-number "$code"
       - run: mkdir -p out && cp app/build/app/outputs/flutter-apk/app-release.apk out/huntaway-android-arm64.apk
       - uses: actions/upload-artifact@v4
         with: { name: android, path: out }

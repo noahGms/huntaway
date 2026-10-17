@@ -527,7 +527,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "herdr-client"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -582,7 +582,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "huntaway-api"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -591,7 +591,7 @@ dependencies = [
 
 [[package]]
 name = "huntaway-client"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -611,7 +611,7 @@ dependencies = [
 
 [[package]]
 name = "huntaway-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "huntaway-api",
  "serde",
@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "huntaway-demo"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -632,7 +632,7 @@ dependencies = [
 
 [[package]]
 name = "huntawayd"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
