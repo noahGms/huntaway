@@ -46,6 +46,11 @@ pub fn run() {
             machines.start();
             app.manage::<Shared>(machines);
             tray::create(app.handle())?;
+            // Linux has no install-time registration of `huntaway://` (AppImage).
+            #[cfg(target_os = "linux")]
+            if let Err(e) = app.deep_link().register_all() {
+                tracing::warn!(error = %e, "schéma huntaway:// non enregistré");
+            }
             let handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 forward_links(&handle, event.urls().iter().map(|u| u.to_string()).collect());

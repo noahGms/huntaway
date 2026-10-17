@@ -25,7 +25,7 @@ huntaway-client = { path = "../../bridge/crates/huntaway-client" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-keyring = { version = "3", features = ["apple-native", "linux-native"] }
+keyring = { version = "3", features = ["apple-native", "sync-secret-service", "crypto-rust"] }
 base64 = "0.22"
 toml = "0.8"
 tracing = "0.1"

@@ -17,6 +17,7 @@ import { PairDialog } from "./dialogs/PairDialog";
 import { useResizable } from "./hooks/useResizable";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { fromHistory, liveKey, parseKey, type Conversation } from "./lib/conversations";
+import { isMac } from "./lib/platform";
 import { HistoryPage } from "./pages/HistoryPage";
 import { LocalDaemonCard, ServersPage } from "./pages/ServersPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -74,7 +75,7 @@ export default function App() {
       )}
       <main className="relative flex h-full min-w-0 flex-1">
         <div className="min-w-0 flex-1">
-          {!showSidebar && <div className="drag absolute left-0 top-0 h-[52px] w-[90px]" />}
+          {!showSidebar && isMac && <div className="drag absolute left-0 top-0 h-[52px] w-[90px]" />}
           {view === "servers" ? (
             <ServersPage />
           ) : view === "history" ? (

@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Virtuoso } from "react-virtuoso";
 import type { MachineView } from "../../api/types";
 import { useConversations } from "../../hooks/useConversations";
+import { isMac } from "../../lib/platform";
 import { groupConversations, type Conversation } from "../../lib/conversations";
 import { shortTime } from "../../lib/format";
 import { machineList, useMachines } from "../../store/machines";
@@ -41,8 +42,8 @@ export function Sidebar() {
 
   return (
     <aside className="flex h-full flex-col border-r border-border bg-surface">
-      {/* Title bar area: traffic lights sit on the left. */}
-      <div className="drag flex h-[52px] shrink-0 items-center justify-end gap-2 pl-[86px] pr-3">
+      {/* Title bar area: on macOS the traffic lights sit on the left. */}
+      <div className={`drag flex h-[52px] shrink-0 items-center gap-2 pr-3 ${isMac ? "justify-end pl-[86px]" : "pl-4"}`}>
         <div className="no-drag flex items-center gap-2">
           <Logo size={24} />
           <span className="text-[15px] font-semibold tracking-tight">Huntaway</span>

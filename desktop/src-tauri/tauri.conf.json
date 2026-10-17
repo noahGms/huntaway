@@ -36,7 +36,9 @@
     "active": true,
     "targets": [
       "app",
-      "dmg"
+      "dmg",
+      "appimage",
+      "deb"
     ],
     "category": "DeveloperTool",
     "shortDescription": "Pilote tes agents Herdr",
@@ -50,6 +52,15 @@
     "macOS": {
       "minimumSystemVersion": "12.0",
       "signingIdentity": "-"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libayatana-appindicator3-1"
+        ]
+      }
     }
   },
   "plugins": {
