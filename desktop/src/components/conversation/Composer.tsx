@@ -1,5 +1,5 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { ArrowUp, AtSign, FileText, Image as ImageIcon, Paperclip, Slash, X } from "lucide-react";
+import { ArrowUp, AtSign, FileText, Image as ImageIcon, Paperclip, Slash, Square, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { api, app, errorMessage } from "../../api/client";
 import type { AgentView, FileMatch } from "../../api/types";
@@ -55,6 +55,10 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
   const toast = useUi((s) => s.toast);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  // Set on send: the agent's status turns "working" a moment later, and Stop
+  // must be available right away.
+  const [justSent, setJustSent] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [mention, setMention] = useState<{ query: string; start: number } | null>(null);
   const [matches, setMatches] = useState<FileMatch[]>([]);
@@ -76,6 +80,29 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
   const popup: { label: string; hint?: string; value: string; icon: React.ReactNode }[] = mention
     ? matches.map((m) => ({ label: m.path, value: m.path, icon: <FileText size={13} /> }))
     : slash.map(([c, hint]) => ({ label: c, hint, value: c, icon: <Slash size={13} /> }));
+
+  const status = agent.attention.status;
+  useEffect(() => {
+    if (!justSent) return;
+    const timer = setTimeout(() => setJustSent(false), 15_000);
+    return () => clearTimeout(timer);
+  }, [justSent]);
+  useEffect(() => {
+    if (status === "working") setJustSent(false);
+  }, [status]);
+  const canStop = (status === "working" || justSent) && online && can(machine, "agents.interrupt");
+
+  const stop = async () => {
+    setStopping(true);
+    try {
+      await api.interrupt(machineId, agent.id);
+      setJustSent(false);
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    } finally {
+      setStopping(false);
+    }
+  };
 
   // Draft per conversation.
   const draftKey = `draft:${machineId}:${agent.id}`;
@@ -176,6 +203,7 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
     setSending(true);
     try {
       await api.sendMessage(machineId, agent.id, message);
+      setJustSent(true);
       if (!override) setText("");
       setAttachments([]);
       setMention(null);
@@ -327,15 +355,27 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
               {agent.model.replace(/^claude-/, "")}
             </span>
           )}
-          <button
-            onClick={() => void send()}
-            disabled={!!disabledReason || sending || (!text.trim() && !attachments.length)}
-            className="flex h-8 w-8 items-center justify-center rounded-[10px] bg-accent text-on-accent transition-opacity hover:bg-[#fff3e2] disabled:opacity-30"
-            aria-label="Envoyer"
-            title={enterToSend ? "Envoyer (Entrée)" : "Envoyer (⌘ Entrée)"}
-          >
-            {sending ? <Spinner /> : <ArrowUp size={16} strokeWidth={2.5} />}
-          </button>
+          {canStop && !text.trim() && !attachments.length ? (
+            <button
+              onClick={() => void stop()}
+              disabled={stopping}
+              className="flex h-8 w-8 items-center justify-center rounded-[10px] bg-accent text-on-accent transition-opacity hover:bg-[#fff3e2] disabled:opacity-30"
+              aria-label="Stop"
+              title="Interrompre l'agent (⌘.)"
+            >
+              {stopping ? <Spinner /> : <Square size={12} strokeWidth={0} fill="currentColor" />}
+            </button>
+          ) : (
+            <button
+              onClick={() => void send()}
+              disabled={!!disabledReason || sending || (!text.trim() && !attachments.length)}
+              className="flex h-8 w-8 items-center justify-center rounded-[10px] bg-accent text-on-accent transition-opacity hover:bg-[#fff3e2] disabled:opacity-30"
+              aria-label="Envoyer"
+              title={enterToSend ? "Envoyer (Entrée)" : "Envoyer (⌘ Entrée)"}
+            >
+              {sending ? <Spinner /> : <ArrowUp size={16} strokeWidth={2.5} />}
+            </button>
+          )}
         </div>
       </div>
     </div>
