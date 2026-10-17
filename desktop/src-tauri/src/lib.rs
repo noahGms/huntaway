@@ -9,7 +9,7 @@ mod notify;
 mod storage;
 mod tray;
 
-use tauri::{Emitter, Manager, RunEvent, WindowEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_deep_link::DeepLinkExt;
 
 use crate::machines::{Machines, Shared};
@@ -97,7 +97,7 @@ pub fn run() {
     app.run(|app, event| {
         // Dock icon clicked while the window is hidden.
         #[cfg(target_os = "macos")]
-        if let RunEvent::Reopen { has_visible_windows: false, .. } = event {
+        if let tauri::RunEvent::Reopen { has_visible_windows: false, .. } = event {
             tray::show_window(app);
         }
         let _ = (app, event);
