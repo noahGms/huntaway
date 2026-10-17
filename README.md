@@ -2,172 +2,172 @@
 
 <h1 align="center">Huntaway</h1>
 
-<p align="center">Pilote tes agents de code <a href="https://herdr.dev">Herdr</a> (Claude Code, Codex) depuis ton téléphone ou ton ordinateur :<br>vois ce qu'ils font, réponds-leur, débloque-les, sache quand ils ont fini.</p>
+<p align="center">Drive your <a href="https://herdr.dev">Herdr</a> coding agents (Claude Code, Codex) from your phone or your computer:<br>see what they are doing, answer them, unblock them, know when they are done.</p>
 
 ---
 
-## Comment ça marche
+## How it works
 
-Tes agents tournent dans [Herdr](https://herdr.dev), sur ton ordinateur et sur tes serveurs. Sur chaque machine, un petit daemon, **`huntawayd`**, suit les sessions Herdr et lit les conversations des agents. Les apps Huntaway se connectent à ces daemons :
+Your agents run in [Herdr](https://herdr.dev), on your computer and on your servers. On each machine, a small daemon, **`huntawayd`**, follows the Herdr sessions and reads the agents' conversations. The Huntaway apps connect to these daemons:
 
 ```
-   📱 App mobile (Android)          💻 App desktop (macOS, Linux)
+   📱 Mobile app (Android)          💻 Desktop app (macOS, Linux)
             │                                  │
-            └──────────── Tailscale ───────────┤  (ou réseau local)
+            └──────────── Tailscale ───────────┤  (or local network)
                                                │
         ┌──────────────────────┬───────────────┴──────┐
         ▼                      ▼                      ▼
    huntawayd              huntawayd              huntawayd
-   ton Mac (local)        serveur de dev         serveur GPU…
+   your Mac (local)       dev server             GPU server…
         │                      │                      │
-   sessions Herdr         sessions Herdr         sessions Herdr
+   Herdr sessions         Herdr sessions         Herdr sessions
    Claude Code, Codex…    Claude Code, Codex…    …
 ```
 
-- **Une seule interface pour tout** : l'app regroupe les agents de toutes tes machines. Les agents qui attendent une réponse passent en premier.
-- **La conversation, pas le terminal** : messages, plans, fichiers modifiés (diffs), commandes et résultats viennent des transcripts natifs des agents. Le terminal reste accessible en un clic.
-- **Débloquer en un geste** : approuver ou refuser une commande, répondre à une question, valider un plan, interrompre un agent.
-- **Notifications** quand un agent a besoin de toi, a terminé ou s'est arrêté.
-- **Sécurisé par défaut** : le daemon n'écoute que sur Tailscale et `127.0.0.1`. Chaque appareil est appairé avec son propre token, et l'identité de la machine est vérifiée par signature à l'appairage.
+- **One place for everything**: the app gathers the agents of all your machines. Agents waiting for an answer come first.
+- **The conversation, not the terminal**: messages, plans, edited files (diffs), commands and their output come from the agents' native transcripts. The terminal is still one click away.
+- **Unblock in one gesture**: approve or deny a command, answer a question, accept a plan, interrupt an agent.
+- **Notifications** when an agent needs you, is done, or has stopped.
+- **Secure by default**: the daemon only listens on Tailscale and `127.0.0.1`. Each device is paired with its own token, and the machine's identity is verified by signature during pairing.
 
-## 1. Installer le daemon sur une machine
+## 1. Install the daemon on a machine
 
-À faire sur **chaque machine** qui fait tourner des agents : ton ordinateur et tes serveurs.
+Do this on **every machine** that runs agents: your computer and your servers.
 
-**Prérequis**
+**Requirements**
 
-1. [Herdr](https://herdr.dev) 0.9 ou plus, avec les intégrations des agents. Sans elles, Huntaway ne voit que l'état des agents, pas leur conversation :
+1. [Herdr](https://herdr.dev) 0.9 or later, with the agent integrations. Without them, Huntaway only sees the agents' state, not their conversation:
    ```sh
    herdr integration install claude
    herdr integration install codex
    ```
-   Redémarre ensuite les agents déjà lancés. Pour Codex, approuve une fois le hook Herdr au premier lancement (« Hooks need review » → faire confiance).
-2. [Tailscale](https://tailscale.com) sur la machine et sur tes appareils, pour accéder aux serveurs à distance. Sur un réseau local, voir `lan = true` plus bas.
+   Then restart the agents that are already running. For Codex, approve the Herdr hook once on first launch ("Hooks need review" → trust).
+2. [Tailscale](https://tailscale.com) on the machine and on your devices, to reach your servers remotely. On a local network, see `lan = true` below.
 
-**Installation (Linux x86_64 / arm64, macOS arm64)**
+**Install (Linux x86_64 / arm64, macOS arm64)**
 
 ```sh
 curl -fsSL https://github.com/noahGms/huntaway/releases/latest/download/install.sh | sh
 ```
 
-Le script télécharge le binaire de la dernière release, vérifie sa somme SHA-256, l'installe dans `~/.local/bin`, puis le lance en service : systemd `--user` sur Linux (actif même déconnecté), launchd sur macOS. **La même commande met à jour un daemon déjà installé.**
+The script downloads the binary of the latest release, checks its SHA-256 sum, installs it in `~/.local/bin`, then runs it as a service: systemd `--user` on Linux (kept running after you log out), launchd on macOS. **The same command updates an installed daemon.**
 
-Vérifier que tout va bien :
+Check that everything is fine:
 
 ```sh
-huntawayd status      # daemon, sessions Herdr, agents, avertissements
+huntawayd status      # daemon, Herdr sessions, agents, warnings
 ```
 
-Options du script : `--pair` (affiche le QR code d'appairage à la fin), `--no-service` (binaire seul). Variables : `HUNTAWAY_BASE_URL` (autre source des binaires), `HUNTAWAY_BIN_DIR` (dossier d'installation).
+Script options: `--pair` (shows the pairing QR code at the end), `--no-service` (binary only). Environment variables: `HUNTAWAY_BASE_URL` (another source for the binaries), `HUNTAWAY_BIN_DIR` (install directory).
 
-**Configuration (facultative)** dans `~/.config/huntaway/config.toml` :
+**Configuration (optional)** in `~/.config/huntaway/config.toml`:
 
 ```toml
-machine_name = "Serveur de dev"   # nom affiché dans les apps
+machine_name = "Dev server"       # name shown in the apps
 port = 7420
-lan = false                       # écouter aussi sur le réseau local
-# listen = ["100.97.66.61:7420"]  # adresses explicites
+lan = false                       # also listen on the local network
+# listen = ["100.97.66.61:7420"]  # explicit addresses
 ```
 
-## 2. Installer les apps
+## 2. Install the apps
 
-Tout est dans la [dernière release](https://github.com/noahGms/huntaway/releases/latest) :
+Everything is in the [latest release](https://github.com/noahGms/huntaway/releases/latest):
 
-| App | Fichier |
+| App | File |
 |---|---|
 | Desktop macOS (Apple Silicon) | `huntaway-desktop-macos-arm64.dmg` |
-| Desktop Linux (x86_64) | `huntaway-desktop-linux-x86_64.AppImage` ou `huntaway-desktop-linux-amd64.deb` |
+| Desktop Linux (x86_64) | `huntaway-desktop-linux-x86_64.AppImage` or `huntaway-desktop-linux-amd64.deb` |
 | Mobile Android | `huntaway-android-arm64.apk` |
 
-- **macOS** : l'app n'est pas signée par Apple. Au premier lancement, fais clic droit sur Huntaway → Ouvrir.
-- **Linux** : `chmod +x huntaway-desktop-linux-x86_64.AppImage` puis lance-le, ou `sudo apt install ./huntaway-desktop-linux-amd64.deb`. Les tokens sont rangés dans le trousseau du bureau (GNOME Keyring, KWallet).
-- **Android** : ouvre l'APK sur le téléphone pour l'installer.
+- **macOS**: the app is not signed by Apple. On first launch, right-click Huntaway → Open.
+- **Linux**: `chmod +x huntaway-desktop-linux-x86_64.AppImage` then run it, or `sudo apt install ./huntaway-desktop-linux-amd64.deb`. Tokens are stored in the desktop keyring (GNOME Keyring, KWallet).
+- **Android**: open the APK on the phone to install it.
 
-L'app desktop se met à jour toute seule (Paramètres → Vérifier les mises à jour).
+The desktop app updates itself (Settings → Check for updates).
 
-## 3. Ajouter tes machines
+## 3. Add your machines
 
-### Dans l'app desktop
+### In the desktop app
 
-- **Cet ordinateur** : rien à faire. Si `huntawayd` tourne sur la même machine, l'app s'y connecte toute seule. Le daemon écrit un token local (`~/.config/huntaway/local.token`), accepté uniquement depuis `127.0.0.1`.
-- **Un serveur** : sur le serveur, lance
+- **This computer**: nothing to do. If `huntawayd` runs on the same machine, the app connects to it on its own. The daemon writes a local token (`~/.config/huntaway/local.token`), only accepted from `127.0.0.1`.
+- **A server**: on the server, run
 
   ```sh
   huntawayd pair --full --link
   ```
 
-  puis colle le lien `huntaway://pair/…` dans l'app (Serveurs → Ajouter une machine). Le lien est valable 5 minutes et ne sert qu'une fois. L'app vérifie l'identité du serveur avant d'enregistrer le token.
+  then paste the `huntaway://pair/…` link in the app (Servers → Add a machine). The link is valid for 5 minutes and can only be used once. The app verifies the server's identity before saving the token.
 
-### Dans l'app mobile
+### In the mobile app
 
-Sur la machine, lance `huntawayd pair` : un QR code s'affiche. Dans l'app, choisis « Ajouter une machine » et scanne-le.
+On the machine, run `huntawayd pair`: a QR code is shown. In the app, choose "Add a machine" and scan it.
 
 ### Permissions
 
-| Commande | L'appareil peut… |
+| Command | The device can… |
 |---|---|
-| `huntawayd pair` | lire (conversations, historique, fichiers, terminal), envoyer des messages, approuver, interrompre |
-| `huntawayd pair --full` | tout, y compris créer et reprendre des agents et taper directement dans le terminal |
-| `huntawayd pair --read-only` | seulement regarder |
+| `huntawayd pair` | read (conversations, history, files, terminal), send messages, approve, interrupt |
+| `huntawayd pair --full` | everything, including creating and resuming agents and typing directly in the terminal |
+| `huntawayd pair --read-only` | only watch |
 
-Gérer les appareils appairés :
+Manage paired devices:
 
 ```sh
 huntawayd devices list
 huntawayd devices revoke <id>
 ```
 
-## Utiliser l'app desktop
+## Using the desktop app
 
 ```
 ┌────────────┬──────────────────────────────────┬────────────────┐
-│ Sidebar    │ Conversation                     │ Activité       │
-│ ● en       │  Vous : …                        │  Session       │
-│   attente  │  Claude : …                      │  Tâches        │
-│ Aujourd'hui│   ✓ Plan  · diff  · $ npm test   │  Commandes     │
-│ Hier       │ ┌ Approbation requise ─────────┐ │  Usage         │
-│            │ │ [1 Oui] [2 Toujours] [Refuser]│ │────────────────│
-│ Serveurs   │ └──────────────────────────────┘ │ Fichiers · Git │
-│ ● Mac      │  Écrire un message… @ /          │ Terminal       │
+│ Sidebar    │ Conversation                     │ Activity       │
+│ ● waiting  │  You: …                          │  Session       │
+│            │  Claude: …                       │  Tasks         │
+│ Today      │   ✓ Plan  · diff  · $ npm test   │  Commands      │
+│ Yesterday  │ ┌ Approval required ───────────┐ │  Usage         │
+│            │ │ [1 Yes] [2 Always] [Deny]    │ │────────────────│
+│ Servers    │ └──────────────────────────────┘ │ Files · Git    │
+│ ● Mac      │  Write a message… @ /            │ Terminal       │
 └────────────┴──────────────────────────────────┴────────────────┘
 ```
 
-- **Sidebar** : toutes les conversations de toutes les machines, groupées par date ou par projet. En haut, celles qui attendent une réponse. Les conversations passées (grisées) peuvent être reprises.
-- **Conversation** : le fil de l'agent avec ses plans, ses diffs et ses commandes. Quand l'agent attend, une carte d'approbation apparaît (touches `1` à `9`, `Échap` pour refuser). Dans le champ de saisie : `@` pour citer un fichier du projet, `/` pour les commandes de l'agent, coller ou glisser une image pour la joindre.
-- **Panneau Activité** : durée, modèle, tâches, outils utilisés, commandes récentes, tokens, remplissage du contexte, coût estimé et limites du forfait (Codex). L'onglet **Fichiers** montre les fichiers modifiés et le `git status`. L'onglet **Terminal** montre l'écran du pane Herdr en direct.
-- **Nouvelle session** (`⌘N`) : choisis la machine, le projet (ou un nouveau dossier), l'agent, le modèle et la consigne.
-- **Historique** : toutes les conversations passées de toutes les machines, avec recherche, et « Reprendre » pour les relancer dans Herdr.
-- **Notifications** : sur macOS, elles proposent « Approuver » / « Refuser » directement, et un clic ouvre la conversation. Tant que la fenêtre est au premier plan, ton téléphone ne reçoit pas de push.
-- **Barre des menus** : nombre d'agents en attente. Fermer la fenêtre laisse l'app active (réglable).
+- **Sidebar**: every conversation of every machine, grouped by date or by project. Those waiting for an answer are at the top. Past conversations (greyed out) can be resumed.
+- **Conversation**: the agent's thread with its plans, diffs and commands. When the agent is waiting, an approval card shows up (keys `1` to `9`, `Esc` to deny). In the input: `@` to mention a project file, `/` for the agent's commands, paste or drop an image to attach it.
+- **Activity panel**: duration, model, tasks, tools used, recent commands, tokens, context usage, estimated cost and plan limits (Codex). The **Files** tab shows the edited files and the `git status`. The **Terminal** tab shows the Herdr pane's screen live.
+- **New session** (`⌘N`): pick the machine, the project (or a new folder), the agent, the model and the prompt.
+- **History**: every past conversation of every machine, with search, and "Resume" to restart it in Herdr.
+- **Notifications**: on macOS and Linux they offer "Approve" / "Deny" directly, and a click opens the conversation. While the window is in the foreground, your phone gets no push.
+- **Menu bar**: number of waiting agents. Closing the window keeps the app running (configurable).
 
-Raccourcis : `⌘K` recherche et actions, `⌘N` nouvelle session, `⌘.` interrompre l'agent, `⌘⇧A` prochain agent en attente, `⌥↑/↓` conversation précédente ou suivante, `⌘B` / `⌘⌥B` barre latérale / panneau.
+Shortcuts: `⌘K` search and actions, `⌘N` new session, `⌘.` interrupt the agent, `⌘⇧A` next waiting agent, `⌥↑/↓` previous or next conversation, `⌘B` / `⌘⌥B` sidebar / panel.
 
-## Notifications mobiles quand l'app est fermée
+## Mobile notifications when the app is closed
 
-Elles passent par UnifiedPush : installe [ntfy](https://ntfy.sh) sur le téléphone, puis dans Huntaway → Réglages → « Notifications app fermée », choisis ntfy. Les messages ne contiennent que le titre et une ligne de résumé.
+They go through UnifiedPush: install [ntfy](https://ntfy.sh) on the phone, then in Huntaway → Settings → "Notifications when closed", choose ntfy. Messages only contain the title and a one-line summary.
 
-## Développement
+## Development
 
 ```
-bridge/    daemon huntawayd (Rust) + crates herdr-client, huntaway-api, huntaway-client, huntaway-core
-app/       app mobile (Flutter)
-desktop/   app desktop (Tauri 2 + React + Tailwind)
+bridge/    huntawayd daemon (Rust) + crates herdr-client, huntaway-api, huntaway-client, huntaway-core
+app/       mobile app (Flutter)
+desktop/   desktop app (Tauri 2 + React + Tailwind)
 ```
 
 ```sh
 # Daemon
 cd bridge && cargo test
-scripts/install-huntawayd.sh            # compile, installe et lance le daemon local
+scripts/install-huntawayd.sh            # builds, installs and starts the local daemon
 
-# App desktop
+# Desktop app
 cd desktop && npm install
-npm run tauri dev                       # mode développement
-npm run bindings                        # régénère les types TypeScript depuis les types Rust
+npm run tauri dev                       # development mode
+npm run bindings                        # regenerates the TypeScript types from the Rust types
 npm test && npm run typecheck
-npm run tauri build                     # bundles dans src-tauri/target/release/bundle/
+npm run tauri build                     # bundles in src-tauri/target/release/bundle/
 
-# App mobile
+# Mobile app
 cd app && flutter run
 ```
 
-**Publier une release** : `git tag v0.1.0 && git push --tags`. La CI construit le daemon (macOS arm64, Linux x86_64/arm64), l'APK, l'app desktop (macOS, Linux), `install.sh`, `latest.json` et `SHA256SUMS`. Les mises à jour du desktop sont signées avec le secret `TAURI_SIGNING_PRIVATE_KEY`. Localement, `scripts/release.sh` remplit `dist/` avec les binaires du daemon.
+**Publish a release**: `git tag v0.1.0 && git push --tags`. CI builds the daemon (macOS arm64, Linux x86_64/arm64), the APK, the desktop app (macOS, Linux), `install.sh`, `latest.json` and `SHA256SUMS`. Desktop updates are signed with the `TAURI_SIGNING_PRIVATE_KEY` secret. Locally, `scripts/release.sh` fills `dist/` with the daemon binaries.
