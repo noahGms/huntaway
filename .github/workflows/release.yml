@@ -1,8 +1,8 @@
 name: Release
 
 # Push a tag `v0.1.0` → GitHub release with the huntawayd binaries, install.sh,
-# the Android APK, the macOS desktop app (+ signed updater artifacts and
-# latest.json) and SHA256SUMS. install.sh downloads from the latest release.
+# the Android APK, the desktop app for macOS (arm64 .dmg) and Linux (x86_64
+# AppImage + .deb), the signed updater artifacts with latest.json, and SHA256SUMS. install.sh downloads from the latest release.
 #
 # Desktop secrets: TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD) sign updates;
 # APPLE_* (optional) sign and notarize the app.
@@ -61,12 +61,25 @@ jobs:
         with: { name: android, path: out }
 
   desktop:
-    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: darwin-aarch64
+          # Oldest supported Ubuntu: the AppImage runs on newer glibc, not older.
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev libdbus-1-dev patchelf
       - working-directory: desktop
         run: npm ci
       - working-directory: desktop
@@ -81,19 +94,35 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           version="${GITHUB_REF_NAME#v}"
-          npx tauri build --config "{\"version\":\"$version\",\"bundle\":{\"createUpdaterArtifacts\":true}}"
-      - run: |
+          # Updater artifacts need the signing key; without it, plain bundles only.
+          updater=false
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then updater=true; fi
+          npx tauri build --config "{\"version\":\"$version\",\"bundle\":{\"createUpdaterArtifacts\":$updater}}"
+      - name: Collect bundles
+        run: |
           mkdir -p out
           b=desktop/src-tauri/target/release/bundle
-          cp $b/dmg/*.dmg out/huntaway-desktop-macos-arm64.dmg
-          cp $b/macos/Huntaway.app.tar.gz out/huntaway-desktop-macos-arm64.app.tar.gz
-          sig=$(cat $b/macos/Huntaway.app.tar.gz.sig)
-          version="${GITHUB_REF_NAME#v}"
-          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/huntaway-desktop-macos-arm64.app.tar.gz"
-          jq -n --arg v "$version" --arg sig "$sig" --arg url "$url" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '{version: $v, pub_date: $date, platforms: {"darwin-aarch64": {signature: $sig, url: $url}}}' > out/latest.json
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            cp $b/dmg/*.dmg out/huntaway-desktop-macos-arm64.dmg
+            update=huntaway-desktop-macos-arm64.app.tar.gz
+            [ -f $b/macos/Huntaway.app.tar.gz ] && cp $b/macos/Huntaway.app.tar.gz out/$update
+            sigfile=$b/macos/Huntaway.app.tar.gz.sig
+          else
+            cp $b/deb/*.deb out/huntaway-desktop-linux-amd64.deb
+            update=huntaway-desktop-linux-x86_64.AppImage
+            cp $b/appimage/*.AppImage out/$update
+            sigfile=$(ls $b/appimage/*.AppImage.sig 2>/dev/null || true)
+          fi
+          # Fragment of latest.json for this platform, merged by the release job.
+          if [ -n "$sigfile" ] && [ -f "$sigfile" ]; then
+            jq -n --arg p "${{ matrix.platform }}" --arg sig "$(cat $sigfile)" --arg url "$base/$update" \
+              '{($p): {signature: $sig, url: $url}}' > out/updater-${{ matrix.platform }}.json
+          fi
       - uses: actions/upload-artifact@v4
-        with: { name: desktop, path: out }
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: out
 
   release:
     needs: [linux, macos, android, desktop]
@@ -104,7 +133,14 @@ jobs:
         with: { path: out, merge-multiple: true }
       - run: |
           cp install.sh out/
-          cd out && sha256sum huntaway* > SHA256SUMS
+          cd out
+          # latest.json for the desktop updater, from the per-platform fragments.
+          if ls updater-*.json >/dev/null 2>&1; then
+            jq -s --arg v "${GITHUB_REF_NAME#v}" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              '{version: $v, pub_date: $date, platforms: (add)}' updater-*.json > latest.json
+            rm updater-*.json
+          fi
+          sha256sum huntaway* > SHA256SUMS
       - env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" out/* --title "$GITHUB_REF_NAME" --generate-notes
