@@ -108,6 +108,10 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           version="${GITHUB_REF_NAME#v}"
+          # Unset secrets come through as empty strings, which Tauri would try to use.
+          for var in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            [ -n "${!var}" ] || unset "$var"
+          done
           # Updater artifacts need the signing key; without it, plain bundles only.
           updater=false
           if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then updater=true; fi
