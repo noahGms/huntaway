@@ -405,12 +405,12 @@ async fn history_get(State(state): State<Shared>, auth: Auth, Path(id): Path<Str
     Ok(Json(serde_json::to_value(entry).unwrap()))
 }
 
-async fn history_timeline(auth: Auth, Path(id): Path<String>, Query(q): Query<TimelineQuery>) -> ApiResult<Json<Value>> {
+async fn history_timeline(State(state): State<Shared>, auth: Auth, Path(id): Path<String>, Query(q): Query<TimelineQuery>) -> ApiResult<Json<Value>> {
     auth.require("history.read")?;
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
     let page = tokio::task::spawn_blocking(move || {
         let found = huntaway_core::history::find(&id)?;
-        crate::history::timeline(&found, q.before, limit).ok()
+        state.history.timeline(&found, q.before, limit).ok()
     })
     .await
     .map_err(|e| anyhow::anyhow!(e))?
