@@ -46,7 +46,7 @@ struct Machine {
     client: Client,
     status: MachineStatus,
     snapshot: Option<StateSnapshot>,
-    _stream: Option<StreamHandle>,
+    stream: Option<StreamHandle>,
     terminals: HashMap<String, TerminalHandle>,
     /// Terminal being opened per agent: a close in the meantime cancels it.
     opening: HashMap<String, u64>,
@@ -118,22 +118,24 @@ impl Machines {
         });
     }
 
-    pub fn set_window_focused(self: &Arc<Self>, focused: bool) {
+    pub fn set_window_focused(&self, focused: bool) {
         let before = self.window_focused.swap(focused, std::sync::atomic::Ordering::Relaxed);
         if before != focused {
             self.send_presence();
             // Back from sleep or another app: don't wait for the backoff.
             if focused {
-                self.reconnect_offline();
+                self.kick_all();
             }
         }
     }
 
-    /// Reconnects every offline machine at once.
-    pub fn reconnect_offline(self: &Arc<Self>) {
-        let offline: Vec<String> = self.inner.lock().unwrap().values().filter(|m| m.status.state == "offline").map(|m| m.record.machine_id.clone()).collect();
-        for id in offline {
-            let _ = self.reconnect(&id);
+    /// Checks every connection now: offline machines retry at once, and a
+    /// socket that died during sleep is noticed within seconds.
+    pub fn kick_all(&self) {
+        for m in self.inner.lock().unwrap().values() {
+            if let Some(stream) = &m.stream {
+                stream.kick();
+            }
         }
     }
 
@@ -200,7 +202,7 @@ impl Machines {
             client,
             status: status.clone(),
             snapshot: None,
-            _stream: Some(handle),
+            stream: Some(handle),
             terminals: HashMap::new(),
             opening: HashMap::new(),
         };
