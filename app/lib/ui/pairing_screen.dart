@@ -19,6 +19,13 @@ class _PairingScreenState extends State<PairingScreen> {
   bool _busy = false;
   String? _status;
 
+  /// Last error, shown until the next attempt.
+  String? _error;
+
+  /// QR code that just failed: the camera keeps seeing it, don't retry it
+  /// (and pile up errors) until the user asks.
+  String? _rejected;
+
   @override
   void dispose() {
     _scanner.dispose();
@@ -36,6 +43,7 @@ class _PairingScreenState extends State<PairingScreen> {
     if (_busy) return;
     setState(() {
       _busy = true;
+      _error = null;
       _status = 'Connecting to the machine…';
     });
     try {
@@ -52,8 +60,9 @@ class _PairingScreenState extends State<PairingScreen> {
       setState(() {
         _busy = false;
         _status = null;
+        _rejected = raw;
+        _error = errorMessage(e);
       });
-      showError(context, e);
     }
   }
 
@@ -90,6 +99,27 @@ class _PairingScreenState extends State<PairingScreen> {
             style: TextStyle(color: HuntawayColors.muted),
           ),
         ),
+        if (_error != null)
+          Container(
+            margin: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+            padding: const EdgeInsets.only(left: 12),
+            decoration: BoxDecoration(
+              color: HuntawayColors.error.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(children: [
+              Expanded(child: Text(_error!, style: const TextStyle(color: HuntawayColors.error, fontSize: 13))),
+              if (_rejected != null)
+                TextButton(
+                  onPressed: () {
+                    final raw = _rejected!;
+                    setState(() => _rejected = null);
+                    _pair(raw);
+                  },
+                  child: const Text('Try again'),
+                ),
+            ]),
+          ),
         Expanded(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -100,7 +130,7 @@ class _PairingScreenState extends State<PairingScreen> {
                   controller: _scanner,
                   onDetect: (capture) {
                     final raw = capture.barcodes.firstOrNull?.rawValue;
-                    if (raw != null) _pair(raw);
+                    if (raw != null && raw != _rejected) _pair(raw);
                   },
                   errorBuilder: (context, error) => Container(
                     color: HuntawayColors.surface,
