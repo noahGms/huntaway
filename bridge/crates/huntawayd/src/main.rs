@@ -9,6 +9,7 @@ mod config;
 mod engine;
 mod files;
 mod history;
+mod listen;
 mod presence;
 mod push;
 mod service;
@@ -111,7 +112,7 @@ async fn run() -> Result<()> {
     let config = Config::load()?;
     let dir = state_dir();
     let identity = Identity::load_or_create(&dir)?;
-    let addrs = config.listen_addrs();
+    let listen_config = config.clone();
     let (engine, notifications) = engine::Engine::new(config, identity.machine_id.clone());
     engine.start();
     let presence = Arc::new(presence::Presence::default());
@@ -123,27 +124,10 @@ async fn run() -> Result<()> {
     if let Err(e) = store.ensure_local_token() {
         warn!(error = %e, "token local non créé : l'app desktop devra être appairée");
     }
-    let state = Arc::new(api::AppState { engine, store, identity, history: Default::default(), presence });
+    let listeners = Arc::new(listen::Listeners::default());
+    let state = Arc::new(api::AppState { engine, store, identity, history: Default::default(), presence, listeners: listeners.clone() });
     let app = api::router(state).into_make_service_with_connect_info::<SocketAddr>();
-
-    let mut servers = Vec::new();
-    for addr in addrs {
-        match tokio::net::TcpListener::bind(addr).await {
-            Ok(listener) => {
-                info!(%addr, "écoute");
-                let app = app.clone();
-                servers.push(tokio::spawn(async move { axum::serve(listener, app).await }));
-            }
-            Err(e) => warn!(%addr, error = %e, "impossible d'écouter sur cette adresse"),
-        }
-    }
-    if servers.is_empty() {
-        bail!("aucune adresse d'écoute disponible");
-    }
-    for server in servers {
-        server.await??;
-    }
-    Ok(())
+    listen::run(listeners, listen_config, app).await
 }
 
 fn daemon_reachable(port: u16) -> bool {

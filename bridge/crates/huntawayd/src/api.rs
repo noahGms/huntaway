@@ -27,6 +27,7 @@ pub struct AppState {
     pub identity: Identity,
     pub history: HistoryIndex,
     pub presence: Arc<crate::presence::Presence>,
+    pub listeners: Arc<crate::listen::Listeners>,
 }
 
 type Shared = Arc<AppState>;
@@ -192,6 +193,7 @@ async fn machine(State(state): State<Shared>, auth: Auth) -> ApiResult<Json<Valu
         "device": { "id": auth.0.id, "name": auth.0.name, "permissions": auth.0.permissions },
         "uptime_secs": state.engine.uptime_secs(),
         "sessions": state.engine.sessions(),
+        "addresses": state.listeners.addresses(),
     })))
 }
 
