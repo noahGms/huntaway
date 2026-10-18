@@ -4,6 +4,7 @@ import { api, errorMessage } from "../api/client";
 import { Button, Kbd } from "../components/ui/Button";
 import { Dialog, Field, inputClass } from "../components/ui/Dialog";
 import { liveKey } from "../lib/conversations";
+import { MOD } from "../lib/keys";
 import { can, machineList, useMachines } from "../store/machines";
 import { useUi } from "../store/ui";
 
@@ -15,12 +16,24 @@ const MODELS: Record<string, string[]> = {
 const LAST_MACHINE = "new-session:machine";
 const NEW_PROJECT = "__new__";
 
+const HOME = /^(\/Users\/[^/]+|\/home\/[^/]+|\/root)(?=\/|$)/;
+
+/** Home directory of the machine, guessed from its project folders. */
+function guessHome(cwds: (string | null)[]): string | null {
+  for (const cwd of cwds) {
+    const m = cwd ? HOME.exec(cwd) : null;
+    if (m) return m[1];
+  }
+  return null;
+}
+
 export function NewSessionDialog() {
   const { newSession, closeNewSession, select, toast } = useUi();
+  const expect = useMachines((s) => s.expect);
   const all = machineList(useMachines((s) => s.machines));
   const machines = all.filter((m) => m.status.state === "online" && can(m, "agents.create"));
-  const [machineId, setMachineId] = useState("");
-  const [workspace, setWorkspace] = useState("");
+  const [chosenMachine, setMachineId] = useState("");
+  const [chosenWorkspace, setWorkspace] = useState("");
   const [newPath, setNewPath] = useState("");
   const [kind, setKind] = useState<"claude" | "codex">("claude");
   const [model, setModel] = useState("");
@@ -38,7 +51,10 @@ export function NewSessionDialog() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [newSession.open]);
 
-  const machine = all.find((m) => m.record.machine_id === machineId);
+  // The selects always show a real option: a machine gone offline or a
+  // project of another machine falls back to the first one.
+  const machineId = machines.some((m) => m.record.machine_id === chosenMachine) ? chosenMachine : (machines[0]?.record.machine_id ?? "");
+  const machine = machines.find((m) => m.record.machine_id === machineId);
   const sessions = machine?.snapshot?.sessions ?? [];
   const workspaces = useMemo(() => {
     const list = machine?.snapshot?.workspaces ?? [];
@@ -49,9 +65,17 @@ export function NewSessionDialog() {
     return [...list].sort((a, b) => last(b.session, b.workspace_id) - last(a.session, a.workspace_id));
   }, [machine]);
 
-  useEffect(() => {
-    if (!workspace && workspaces[0]) setWorkspace(`${workspaces[0].session}|${workspaces[0].workspace_id}`);
-  }, [workspaces, workspace]);
+  const options = workspaces.filter((w) => sessions.some((s) => s.name === w.session)).map((w) => `${w.session}|${w.workspace_id}`);
+  const workspace = chosenWorkspace === NEW_PROJECT || options.includes(chosenWorkspace) ? chosenWorkspace : (options[0] ?? NEW_PROJECT);
+  const home = guessHome(workspaces.map((w) => w.cwd));
+  // `~/x` is expanded with the machine's home when it can be guessed.
+  const path = newPath.trim().startsWith("~/") && home ? home + newPath.trim().slice(1) : newPath.trim();
+  const pathError =
+    workspace === NEW_PROJECT && path && !path.startsWith("/")
+      ? path.startsWith("~")
+        ? "Use the full path: the home folder of this machine is unknown."
+        : "Use an absolute path (starting with /)."
+      : null;
 
   const submit = async () => {
     if (!machine) return;
@@ -61,8 +85,8 @@ export function NewSessionDialog() {
       let workspaceId: string;
       if (workspace === NEW_PROJECT) {
         session = sessions.find((s) => s.name === "default")?.name ?? sessions[0]?.name;
-        if (!session) throw new Error("Aucune session Herdr active sur cette machine");
-        const r = await api.createWorkspace(machine.record.machine_id, { session, cwd: newPath.trim() });
+        if (!session) throw new Error("No Herdr session running on this machine");
+        const r = await api.createWorkspace(machine.record.machine_id, { session, cwd: path });
         workspaceId = r.workspace_id;
       } else {
         [session, workspaceId] = workspace.split("|");
@@ -70,8 +94,10 @@ export function NewSessionDialog() {
       const r = await api.createAgent(machine.record.machine_id, { session, workspace_id: workspaceId, kind, prompt: prompt.trim(), model: model.trim() || undefined });
       localStorage.setItem(LAST_MACHINE, machine.record.machine_id);
       closeNewSession();
-      select(liveKey(machine.record.machine_id, r.agent_id));
-      toast(r.prompt_sent || !prompt.trim() ? "Session lancée" : "Session lancée : l'agent attend une réponse avant ta consigne", r.prompt_sent ? "success" : "info");
+      const key = liveKey(machine.record.machine_id, r.agent_id);
+      expect(key);
+      select(key);
+      toast(r.prompt_sent || !prompt.trim() ? "Session started" : "Session started: the agent is waiting for an answer before your prompt", r.prompt_sent ? "success" : "info");
     } catch (e) {
       toast(errorMessage(e), "error");
     } finally {
@@ -79,13 +105,13 @@ export function NewSessionDialog() {
     }
   };
 
-  const valid = !!machine && (workspace === NEW_PROJECT ? newPath.trim().startsWith("/") : !!workspace);
+  const valid = !!machine && (workspace === NEW_PROJECT ? path.startsWith("/") : !!workspace);
 
   return (
-    <Dialog open={newSession.open} onOpenChange={(o) => !o && closeNewSession()} title="Nouvelle session" description="Lance un agent dans un projet Herdr, sur la machine de ton choix." width={560}>
+    <Dialog open={newSession.open} onOpenChange={(o) => !o && closeNewSession()} title="New session" description="Start an agent in a Herdr project, on the machine of your choice." width={560}>
       {machines.length === 0 ? (
         <p className="text-[13px] leading-relaxed text-muted">
-          Aucune machine en ligne ne permet de créer des agents. La machine locale le permet toujours ; pour un serveur, appaire-le avec <code className="font-mono">huntawayd pair --full --link</code>.
+          No online machine lets this device create agents. The local machine always does; for a server, pair it with <code className="font-mono">huntawayd pair --full --link</code>.
         </p>
       ) : (
         <form
@@ -112,29 +138,29 @@ export function NewSessionDialog() {
                 ))}
               </select>
             </Field>
-            <Field label="Projet">
+            <Field label="Project">
               <select value={workspace} onChange={(e) => setWorkspace(e.target.value)} className={inputClass}>
                 {sessions.map((s) => (
-                  <optgroup key={s.name} label={sessions.length > 1 ? `Session ${s.name}` : "Projets Herdr"}>
+                  <optgroup key={s.name} label={sessions.length > 1 ? `Session ${s.name}` : "Herdr projects"}>
                     {workspaces
                       .filter((w) => w.session === s.name)
                       .map((w) => (
                         <option key={`${w.session}|${w.workspace_id}`} value={`${w.session}|${w.workspace_id}`}>
                           {w.label || w.workspace_id}
-                          {w.cwd ? `  —  ${w.cwd.replace(/^\/Users\/[^/]+/, "~")}` : ""}
+                          {w.cwd ? `  —  ${w.cwd.replace(HOME, "~")}` : ""}
                         </option>
                       ))}
                   </optgroup>
                 ))}
-                <option value={NEW_PROJECT}>+ Nouveau projet à partir d'un dossier…</option>
+                <option value={NEW_PROJECT}>+ New project from a folder…</option>
               </select>
             </Field>
           </div>
           {workspace === NEW_PROJECT && (
-            <Field label="Dossier du projet" hint="Chemin absolu sur la machine. Un espace de travail Herdr y sera créé.">
+            <Field label="Project folder" hint={pathError ?? "Absolute path on the machine (~ works). A Herdr workspace is created there."}>
               <div className="relative">
                 <FolderPlus size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-faint" />
-                <input autoFocus value={newPath} onChange={(e) => setNewPath(e.target.value)} placeholder="/Users/moi/Developer/mon-projet" className={`${inputClass} pl-8 font-mono text-[12px]`} />
+                <input autoFocus value={newPath} onChange={(e) => setNewPath(e.target.value)} placeholder={`${home ?? "/home/me"}/projects/my-app`} className={`${inputClass} pl-8 font-mono text-[12px]`} />
               </div>
             </Field>
           )}
@@ -159,8 +185,8 @@ export function NewSessionDialog() {
                 ))}
               </div>
             </Field>
-            <Field label="Modèle (facultatif)">
-              <input list={`models-${kind}`} value={model} onChange={(e) => setModel(e.target.value)} placeholder="par défaut" className={inputClass} />
+            <Field label="Model (optional)">
+              <input list={`models-${kind}`} value={model} onChange={(e) => setModel(e.target.value)} placeholder="default" className={inputClass} />
               <datalist id={`models-${kind}`}>
                 {MODELS[kind].map((m) => (
                   <option key={m} value={m} />
@@ -168,7 +194,7 @@ export function NewSessionDialog() {
               </datalist>
             </Field>
           </div>
-          <Field label="Consigne">
+          <Field label="Prompt">
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
@@ -179,20 +205,20 @@ export function NewSessionDialog() {
                 }
               }}
               rows={5}
-              placeholder="Que doit faire l'agent ?"
+              placeholder="What should the agent do?"
               className={`${inputClass} resize-none leading-relaxed`}
             />
           </Field>
           <div className="flex items-center justify-end gap-2 pt-1">
             <span className="mr-auto flex items-center gap-1 text-[11.5px] text-faint">
-              <Kbd>⌘</Kbd>
-              <Kbd>↵</Kbd> pour lancer
+              <Kbd>{MOD}</Kbd>
+              <Kbd>↵</Kbd> to start
             </span>
             <Button type="button" variant="ghost" onClick={closeNewSession}>
-              Annuler
+              Cancel
             </Button>
             <Button type="submit" variant="primary" loading={busy} disabled={!valid}>
-              Lancer la session
+              Start session
             </Button>
           </div>
         </form>
