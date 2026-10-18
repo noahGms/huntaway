@@ -3,13 +3,14 @@ import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage, isApiError } from "../../api/client";
 import type { AgentView, ScreenOption } from "../../api/types";
 import { changeDiff } from "../../lib/diff";
-import { can } from "../../store/machines";
-import { useMachines } from "../../store/machines";
+import { overlayOpen } from "../../lib/platform";
+import { can, useMachines } from "../../store/machines";
 import { useUi } from "../../store/ui";
 import { Button, Kbd } from "../ui/Button";
 import { DiffView } from "./DiffView";
 import { CodeBlock, Markdown } from "./Markdown";
 
+// Matches the agent's own menu labels (Claude Code can run in French).
 const TYPE_SOMETHING = /type something|autre réponse|other/i;
 
 function toolPreview(input: unknown) {
@@ -37,6 +38,7 @@ function toolPreview(input: unknown) {
   return <CodeBlock code={json.slice(0, 4000)} lang="json" maxHeight={180} />;
 }
 
+/** Card for the prompt the agent shows; mount it with `key={interaction.id}`. */
 export function ApprovalCard({ machineId, agent }: { machineId: string; agent: AgentView }) {
   const interaction = agent.interaction!;
   const machine = useMachines((s) => s.machines[machineId]);
@@ -50,29 +52,37 @@ export function ApprovalCard({ machineId, agent }: { machineId: string; agent: A
   const options = interaction.options;
   const typeOption = options.find((o) => TYPE_SOMETHING.test(o.label));
 
+  // Answered: the card stays disabled until the agent moves on (a new card
+  // replaces this one), so a second click can't answer the next prompt.
+  useEffect(() => {
+    if (busy === null) return;
+    const timer = setTimeout(() => setBusy(null), 8_000);
+    return () => clearTimeout(timer);
+  }, [busy]);
+
   const run = async (what: number | "deny", fn: () => Promise<unknown>) => {
     setBusy(what);
     try {
       await fn();
       setShowDeny(false);
-      setDenyText("");
-      setFreeText("");
     } catch (e) {
-      if (isApiError(e) && e.code === "already_resolved") toast("Déjà répondu (depuis un autre appareil ou le terminal)");
-      else toast(errorMessage(e), "error");
-    } finally {
       setBusy(null);
+      if (isApiError(e) && e.code === "already_resolved") toast("Already answered (from another device or the terminal)");
+      else if (isApiError(e) && e.code === "interaction_changed") toast("The agent is now asking something else");
+      else toast(errorMessage(e), "error");
     }
   };
-  const choose = (o: ScreenOption, text?: string) => run(o.number, () => api.choose(machineId, agent.id, o.number, text));
-  const deny = () => run("deny", () => api.deny(machineId, agent.id, denyText.trim() || undefined));
+  const choose = (o: ScreenOption, text?: string) => run(o.number, () => api.choose(machineId, agent.id, interaction.id, o.number, text));
+  const deny = () => run("deny", () => api.deny(machineId, agent.id, interaction.id, denyText.trim() || undefined));
 
-  // 1–9 pick an option, Esc refuses (when no text field has focus).
+  // 1–9 pick an option, Esc opens the deny form (when no text field has focus
+  // and no menu or dialog takes the keys).
   useEffect(() => {
     if (!allowed) return;
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || overlayOpen()) return;
       const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
       if (e.metaKey || e.ctrlKey || e.altKey || busy !== null) return;
       const n = Number(e.key);
       if (n >= 1 && n <= 9) {
@@ -81,9 +91,9 @@ export function ApprovalCard({ machineId, agent }: { machineId: string; agent: A
           e.preventDefault();
           void choose(o);
         }
-      } else if (e.key === "Escape" && interaction.reason === "approval") {
+      } else if (e.key === "Escape" && interaction.reason === "approval" && !showDeny) {
         e.preventDefault();
-        void deny();
+        setShowDeny(true);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -93,13 +103,13 @@ export function ApprovalCard({ machineId, agent }: { machineId: string; agent: A
   const header = useMemo(() => {
     switch (interaction.reason) {
       case "approval":
-        return { icon: <ShieldAlert size={16} />, title: "Approbation requise" };
+        return { icon: <ShieldAlert size={16} />, title: "Approval needed" };
       case "question":
-        return { icon: <MessageCircleQuestion size={16} />, title: "L'agent te pose une question" };
+        return { icon: <MessageCircleQuestion size={16} />, title: "The agent has a question" };
       case "plan":
-        return { icon: <ListChecks size={16} />, title: "Plan à valider" };
+        return { icon: <ListChecks size={16} />, title: "Plan to review" };
       default:
-        return { icon: <Hand size={16} />, title: "L'agent attend une réponse" };
+        return { icon: <Hand size={16} />, title: "The agent is waiting for an answer" };
     }
   }, [interaction.reason]);
 
@@ -141,12 +151,12 @@ export function ApprovalCard({ machineId, agent }: { machineId: string; agent: A
           </div>
         )}
         {interaction.reason === "prompt" && options.length === 0 && (
-          <p className="text-[12.5px] text-muted">Le menu n'a pas pu être lu. Réponds depuis le terminal.</p>
+          <p className="text-[12.5px] text-muted">Couldn't read the menu. Answer from the terminal.</p>
         )}
       </div>
 
       <div className="flex flex-wrap items-center gap-2 border-t border-blocked/20 px-4 py-3">
-        {!allowed && <span className="text-[12px] text-muted">Cet appareil n'a pas la permission de répondre.</span>}
+        {!allowed && <span className="text-[12px] text-muted">This device isn't allowed to answer.</span>}
         {allowed &&
           options
             .filter((o) => o !== typeOption)
@@ -164,14 +174,14 @@ export function ApprovalCard({ machineId, agent }: { machineId: string; agent: A
                 <span className="max-w-[320px] truncate">{o.label}</span>
               </Button>
             ))}
-        {allowed && options.length === 0 && interaction.reason !== "prompt" && <span className="text-[12px] text-muted">Lecture du menu…</span>}
+        {allowed && options.length === 0 && interaction.reason !== "prompt" && <span className="text-[12px] text-muted">Reading the menu…</span>}
         <div className="flex-1" />
         <Button size="sm" variant="ghost" icon={<SquareTerminal size={13} />} onClick={() => setPanelTab("terminal")}>
           Terminal
         </Button>
         {allowed && interaction.reason === "approval" && !showDeny && (
           <Button size="sm" variant="danger" disabled={busy !== null} onClick={() => setShowDeny(true)}>
-            Refuser… <Kbd>Esc</Kbd>
+            Deny… <Kbd>Esc</Kbd>
           </Button>
         )}
       </div>
@@ -187,11 +197,11 @@ export function ApprovalCard({ machineId, agent }: { machineId: string; agent: A
           <input
             value={freeText}
             onChange={(e) => setFreeText(e.target.value)}
-            placeholder="Autre réponse…"
+            placeholder="Other answer…"
             className="flex-1 rounded-[10px] border border-border bg-bg px-3 py-1.5 text-[13px] placeholder:text-faint focus:outline-none"
           />
           <Button size="sm" type="submit" disabled={!freeText.trim() || busy !== null} loading={busy === typeOption.number}>
-            Répondre
+            Reply
           </Button>
         </form>
       )}
@@ -208,12 +218,16 @@ export function ApprovalCard({ machineId, agent }: { machineId: string; agent: A
             autoFocus
             value={denyText}
             onChange={(e) => setDenyText(e.target.value)}
-            onKeyDown={(e) => e.key === "Escape" && setShowDeny(false)}
-            placeholder="Pourquoi ? Que doit-il faire à la place ? (facultatif)"
+            onKeyDown={(e) => {
+              if (e.key !== "Escape") return;
+              e.preventDefault();
+              setShowDeny(false);
+            }}
+            placeholder="Why? What should it do instead? (optional)"
             className="flex-1 rounded-[10px] border border-border bg-bg px-3 py-1.5 text-[13px] placeholder:text-faint focus:outline-none"
           />
-          <Button size="sm" variant="danger" type="submit" loading={busy === "deny"}>
-            Refuser
+          <Button size="sm" variant="danger" type="submit" loading={busy === "deny"} disabled={busy !== null}>
+            Deny
           </Button>
         </form>
       )}

@@ -3,7 +3,6 @@
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
-  AgentView,
   ApiError,
   FileMatch,
   GitStatus,
@@ -17,7 +16,6 @@ import type {
   Settings,
   TerminalMessage,
   TimelinePage,
-  Usage,
 } from "./types";
 
 const seg = encodeURIComponent;
@@ -48,25 +46,22 @@ export const api = {
   },
 
   machine: (m: string) => api.get<MachineResponse>(m, "/v1/machine"),
-  agent: (m: string, id: string) => api.get<AgentView>(m, `/v1/agents/${seg(id)}`),
   timeline: (m: string, id: string, before?: number, limit = 120) =>
     api.get<TimelinePage>(m, `/v1/agents/${seg(id)}/timeline${query({ before, limit })}`),
-  screen: (m: string, id: string, lines?: number) =>
-    api.get<{ text: string; ansi: string | null }>(m, `/v1/agents/${seg(id)}/screen${query({ lines, ansi: 1 })}`),
 
   sendMessage: (m: string, id: string, text: string) => api.post(m, `/v1/agents/${seg(id)}/messages`, { text }),
   interrupt: (m: string, id: string) => api.post(m, `/v1/agents/${seg(id)}/interrupt`),
-  choose: (m: string, id: string, number: number, text?: string) =>
-    api.post(m, `/v1/agents/${seg(id)}/choice`, { number, text: text || undefined }),
-  deny: (m: string, id: string, text?: string) => api.post(m, `/v1/agents/${seg(id)}/deny`, { text: text || undefined }),
+  /** Answers the prompt `interactionId`; the daemon refuses with 409 `interaction_changed` if the agent moved on. */
+  choose: (m: string, id: string, interactionId: string, number: number, text?: string) =>
+    api.post(m, `/v1/agents/${seg(id)}/choice`, { number, text: text || undefined, interaction_id: interactionId }),
+  deny: (m: string, id: string, interactionId: string, text?: string) =>
+    api.post(m, `/v1/agents/${seg(id)}/deny`, { text: text || undefined, interaction_id: interactionId }),
   createAgent: (
     m: string,
     body: { session: string; workspace_id: string; kind: string; prompt: string; model?: string; cwd?: string },
   ) => api.post<{ agent_id: string; prompt_sent: boolean }>(m, "/v1/agents", body),
   createWorkspace: (m: string, body: { session: string; cwd: string; label?: string }) =>
     api.post<{ workspace_id: string }>(m, "/v1/workspaces", body),
-
-  usage: (m: string) => api.get<{ agents: { agent_id: string; usage: Usage }[]; total: Usage }>(m, "/v1/usage"),
 
   history: (m: string, p: { before?: number; limit?: number; project?: string; kind?: string; q?: string } = {}) =>
     api.get<HistoryPage>(m, `/v1/history${query(p)}`),
