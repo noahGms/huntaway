@@ -110,8 +110,8 @@ On the machine, run `huntawayd pair`: a QR code is shown. In the app, choose "Ad
 
 | Command | The device can… |
 |---|---|
-| `huntawayd pair` | read (conversations, history, files, terminal), send messages, approve, interrupt |
-| `huntawayd pair --full` | everything, including creating and resuming agents and typing directly in the terminal |
+| `huntawayd pair` | read (conversations, history, files, terminal), send messages, approve, interrupt, start and stop the project scripts |
+| `huntawayd pair --full` | everything, including creating and resuming agents, typing directly in the terminal, adding scripts and opening shells |
 | `huntawayd pair --read-only` | only watch |
 
 Manage paired devices:
@@ -139,7 +139,7 @@ huntawayd devices revoke <id>
 - **Sidebar**: every conversation of every machine, one compact line each, grouped by date or as a Machine → Project tree with counts. Agents waiting for an answer are pinned at the top. Past conversations (greyed out) can be resumed.
 - **Spaces**: the selector at the top shows all machines, one machine, or a group of machines (groups are defined in Settings or on the Servers page). Star your favorite projects; projects idle for a while (14 days by default) are hidden until you ask for them.
 - **Servers**: a table with each machine's state, latency, daemon version, agents and group. Rename, reorder, reconnect or forget machines there.
-- **Project page**: a project's conversations, including past ones, and "New session here".
+- **Project page**: a project's conversations, including past ones, "New session here", its [scripts](#scripts) and its [terminals](#terminal).
 - **Conversation**: the agent's thread with its plans, diffs and commands. When the agent is waiting, an approval card shows up (keys `1` to `9`, `Esc` to deny). In the input: `@` to mention a project file, `/` for the agent's commands, paste or drop an image to attach it.
 - **Activity panel**: duration, model, tasks, tools used, recent commands, tokens, context usage, estimated cost and plan limits (Codex). The **Files** tab shows the edited files and the `git status`. The **Terminal** tab shows the Herdr pane's screen live.
 - **New session** (`⌘N`): pick the machine, the project (or a new folder), the agent, the model and the prompt.
@@ -147,7 +147,28 @@ huntawayd devices revoke <id>
 - **Notifications**: on macOS and Linux they offer "Approve" / "Deny" directly, and a click opens the conversation. While the window is in the foreground, your phone gets no push.
 - **Menu bar**: number of waiting agents. Closing the window keeps the app running (configurable).
 
-Shortcuts (`Ctrl` instead of `⌘` on Linux): `⌘K` search conversations, projects, machines and actions, `⌘N` new session, `⌘.` interrupt the agent, `⌘⇧A` next waiting agent, `⌥↑/↓` previous or next conversation, `⌘B` / `⌘⌥B` sidebar / panel.
+Shortcuts (`Ctrl` instead of `⌘` on Linux): `⌘K` search conversations, projects, machines, actions and scripts ("start dev api"), `⌘N` new session, `⌘.` interrupt the agent, `⌘⇧A` next waiting agent, `⌥↑/↓` previous or next conversation, `⌘B` / `⌘⌥B` sidebar / panel.
+
+### Scripts
+
+Start and stop a project's services (dev server, database, workers…) from its project page or with `⌘K` ("Start dev @ api"). Each script runs in its own Herdr tab, labeled `▶ dev`, in the project's workspace (created if needed): it keeps running when the app is closed and you can see it in Herdr. Stop sends Ctrl-C, then closes the tab; Restart sends Ctrl-C and runs it again in the same tab. The logs button shows the tab live.
+
+Define them in a `.huntaway.toml` at the project root, to version them with the project:
+
+```toml
+[scripts]
+dev = "npm run dev"
+db = { cmd = "docker compose up", cwd = "infra" }   # cwd: relative to the project root
+worker = "cargo run --bin worker"
+```
+
+Scripts added from the app ("Add", or one click on a suggestion found in `package.json`, the `Makefile`, a Compose file or `Cargo.toml`) are stored by the daemon on that machine (`~/.config/huntaway/scripts.json`). When both define the same name, `.huntaway.toml` wins.
+
+A script is *running* while a command runs in its tab, *exited* when its shell is back at the prompt (the tab stays open with its output) and *stopped* once the tab is closed. Commands are typed into your shell, so they see your usual environment.
+
+### Terminal
+
+"Open terminal" on a project page (or `⌘K` → "Open terminal") opens a shell in a new Herdr tab, in the project directory, and shows it in the app: type directly in it (needs `--full` on paired devices). Shells opened this way are listed on the project page, to reopen or close them; closing one closes its Herdr tab.
 
 ## Mobile notifications when the app is closed
 
