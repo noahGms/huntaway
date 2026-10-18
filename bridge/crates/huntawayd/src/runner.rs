@@ -279,6 +279,21 @@ impl Runner {
         self.engine.emit("shells.updated", None, serde_json::to_value(data).unwrap());
     }
 
+    /// Devices that can't edit scripts may only run them in known projects:
+    /// where an agent works, or where scripts were added or run before.
+    /// Otherwise any directory's `.huntaway.toml` could be run.
+    pub fn check_known(&self, path: &str) -> ActionResult<()> {
+        let path = canonical(path)?;
+        let known = !self.store.get(&path).is_empty()
+            || self.registry.lock().unwrap().scripts.iter().any(|p| p.path == path)
+            || self.engine.agent_cwds().iter().any(|cwd| canonical(cwd).is_ok_and(|c| c == path));
+        if known {
+            Ok(())
+        } else {
+            Err(ActionError::new(403, "unknown_project", "scripts can only be run in a project with an agent"))
+        }
+    }
+
     // ---------------------------------------------------------- editing
 
     /// Adds or replaces an app script (`rename_from`: its previous name).

@@ -590,6 +590,9 @@ async fn delete_script(State(state): State<Shared>, auth: Auth, Json(b): Json<Sc
 
 async fn start_script(State(state): State<Shared>, auth: Auth, Json(b): Json<ScriptBody>) -> ApiResult<Json<Value>> {
     auth.require("scripts.run")?;
+    if !auth.0.can("scripts.edit") {
+        state.runner.check_known(&b.path)?;
+    }
     let script = state.runner.start_script(&b.path, &b.name).await?;
     Ok(Json(json!({ "ok": true, "script": script })))
 }
@@ -602,6 +605,9 @@ async fn stop_script(State(state): State<Shared>, auth: Auth, Json(b): Json<Scri
 
 async fn restart_script(State(state): State<Shared>, auth: Auth, Json(b): Json<ScriptBody>) -> ApiResult<Json<Value>> {
     auth.require("scripts.run")?;
+    if !auth.0.can("scripts.edit") {
+        state.runner.check_known(&b.path)?;
+    }
     let script = state.runner.restart_script(&b.path, &b.name).await?;
     Ok(Json(json!({ "ok": true, "script": script })))
 }

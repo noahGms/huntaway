@@ -1159,6 +1159,11 @@ impl Engine {
         names
     }
 
+    /// Working directories of the live agents.
+    pub fn agent_cwds(&self) -> Vec<String> {
+        self.state.lock().unwrap().agents.values().filter_map(|a| a.view.cwd.clone()).collect()
+    }
+
     /// Workspace (session, id) of an agent working in `cwd`.
     pub fn agent_workspace(&self, cwd: &str) -> Option<(String, String)> {
         let state = self.state.lock().unwrap();
