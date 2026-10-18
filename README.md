@@ -81,9 +81,13 @@ Everything is in the [latest release](https://github.com/noahGms/huntaway/releas
 
 - **macOS**: the app is not signed by Apple. On first launch, right-click Huntaway → Open.
 - **Linux**: `chmod +x huntaway-desktop-linux-x86_64.AppImage` then run it, or `sudo apt install ./huntaway-desktop-linux-amd64.deb`. Tokens are stored in the desktop keyring (GNOME Keyring, KWallet).
-- **Android**: open the APK on the phone to install it.
+- **Android**: open the APK on the phone to install it (allow installing apps from your browser or file manager).
 
-The desktop app updates itself (Settings → Check for updates).
+**Updates**: both apps update themselves from GitHub releases, no store involved.
+
+- **Desktop**: checks at launch and every 6 hours, downloads in the background, then offers "Restart". Also in Settings → Check for updates.
+- **Android**: checks at launch (at most every 6 hours) and shows "Update available". The app downloads the APK, verifies its SHA-256 and opens the Android installer. The first time, Android asks you to allow Huntaway to install apps. Also in Settings → Check for updates.
+- **Daemon**: the Servers page flags machines running an older `huntawayd` and shows the update command.
 
 ## 3. Add your machines
 
@@ -120,19 +124,22 @@ huntawayd devices revoke <id>
 ## Using the desktop app
 
 ```
-┌────────────┬──────────────────────────────────┬────────────────┐
-│ Sidebar    │ Conversation                     │ Activity       │
-│ ● waiting  │  You: …                          │  Session       │
-│            │  Claude: …                       │  Tasks         │
-│ Today      │   ✓ Plan  · diff  · $ npm test   │  Commands      │
-│ Yesterday  │ ┌ Approval required ───────────┐ │  Usage         │
-│            │ │ [1 Yes] [2 Always] [Deny]    │ │────────────────│
-│ Servers    │ └──────────────────────────────┘ │ Files · Git    │
-│ ● Mac      │  Write a message… @ /            │ Terminal       │
-└────────────┴──────────────────────────────────┴────────────────┘
+┌──────────────────┬──────────────────────────────────┬────────────────┐
+│ Sidebar          │ Conversation                     │ Activity       │
+│ All machines ▾   │  You: …                          │  Session       │
+│ ● Waiting (2)    │  Claude: …                       │  Tasks         │
+│ ▾ Dev server     │   ✓ Plan  · diff  · $ npm test   │  Commands      │
+│   ▾ api       3  │ ┌ Approval required ───────────┐ │  Usage         │
+│     Fix auth  5m │ │ [1 Yes] [2 Always] [Deny]    │ │────────────────│
+│   ▸ web       1  │ └──────────────────────────────┘ │ Files · Git    │
+│ ▸ Mac            │  Write a message… @ /            │ Terminal       │
+└──────────────────┴──────────────────────────────────┴────────────────┘
 ```
 
-- **Sidebar**: every conversation of every machine, grouped by date or by project. Those waiting for an answer are at the top. Past conversations (greyed out) can be resumed.
+- **Sidebar**: every conversation of every machine, one compact line each, grouped by date or as a Machine → Project tree with counts. Agents waiting for an answer are pinned at the top. Past conversations (greyed out) can be resumed.
+- **Spaces**: the selector at the top shows all machines, one machine, or a group of machines (groups are defined in Settings or on the Servers page). Star your favorite projects; projects idle for a while (14 days by default) are hidden until you ask for them.
+- **Servers**: a table with each machine's state, latency, daemon version, agents and group. Rename, reorder, reconnect or forget machines there.
+- **Project page**: a project's conversations, including past ones, and "New session here".
 - **Conversation**: the agent's thread with its plans, diffs and commands. When the agent is waiting, an approval card shows up (keys `1` to `9`, `Esc` to deny). In the input: `@` to mention a project file, `/` for the agent's commands, paste or drop an image to attach it.
 - **Activity panel**: duration, model, tasks, tools used, recent commands, tokens, context usage, estimated cost and plan limits (Codex). The **Files** tab shows the edited files and the `git status`. The **Terminal** tab shows the Herdr pane's screen live.
 - **New session** (`⌘N`): pick the machine, the project (or a new folder), the agent, the model and the prompt.
@@ -140,11 +147,11 @@ huntawayd devices revoke <id>
 - **Notifications**: on macOS and Linux they offer "Approve" / "Deny" directly, and a click opens the conversation. While the window is in the foreground, your phone gets no push.
 - **Menu bar**: number of waiting agents. Closing the window keeps the app running (configurable).
 
-Shortcuts: `⌘K` search and actions, `⌘N` new session, `⌘.` interrupt the agent, `⌘⇧A` next waiting agent, `⌥↑/↓` previous or next conversation, `⌘B` / `⌘⌥B` sidebar / panel.
+Shortcuts (`Ctrl` instead of `⌘` on Linux): `⌘K` search conversations, projects, machines and actions, `⌘N` new session, `⌘.` interrupt the agent, `⌘⇧A` next waiting agent, `⌥↑/↓` previous or next conversation, `⌘B` / `⌘⌥B` sidebar / panel.
 
 ## Mobile notifications when the app is closed
 
-They go through UnifiedPush: install [ntfy](https://ntfy.sh) on the phone, then in Huntaway → Settings → "Notifications when closed", choose ntfy. Messages only contain the title and a one-line summary.
+They go through UnifiedPush: install [ntfy](https://ntfy.sh) on the phone, then in Huntaway → Settings → "Notifications when closed", choose ntfy. Pushes carry no conversation content: only a generic title such as "Claude needs you". Tap it to open the conversation, loaded from your machine.
 
 ## Development
 
