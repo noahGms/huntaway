@@ -10,8 +10,11 @@ import 'common.dart';
 sealed class Entry {}
 
 class MessageEntry extends Entry {
-  MessageEntry(this.item);
+  MessageEntry(this.item, {this.continued = false});
   final TimelineItem item;
+
+  /// Follows another reply of the agent: no need to repeat its name.
+  final bool continued;
 }
 
 class ActivityEntry extends Entry {
@@ -78,6 +81,14 @@ class NoticeEntry extends Entry {
 List<Entry> buildEntries(List<TimelineItem> items) {
   final entries = <Entry>[];
   List<TimelineItem>? activity;
+  TimelineItem? lastMessage;
+  bool continues(TimelineItem item) {
+    final last = lastMessage;
+    if (last == null || last.type != 'assistant_message') return false;
+    final (a, b) = (last.timestamp, item.timestamp);
+    return a == null || b == null || b.difference(a) < const Duration(minutes: 10);
+  }
+
   void flush() {
     if (activity != null && activity!.any((i) => i.type != 'tool_result')) {
       entries.add(ActivityEntry(activity!));
@@ -90,9 +101,11 @@ List<Entry> buildEntries(List<TimelineItem> items) {
       case 'user_message':
         flush();
         entries.add(MessageEntry(item));
+        lastMessage = item;
       case 'assistant_message' when !item.sidechain:
         flush();
-        entries.add(MessageEntry(item));
+        entries.add(MessageEntry(item, continued: continues(item)));
+        lastMessage = item;
       case 'tool_call' when item.kind == 'question':
         flush();
         entries.add(QuestionEntry(item));
@@ -116,9 +129,12 @@ List<Entry> buildEntries(List<TimelineItem> items) {
 }
 
 class MessageBubble extends StatelessWidget {
-  const MessageBubble(this.item, {super.key, required this.agentName});
+  const MessageBubble(this.item, {super.key, required this.agentName, this.showHeader = true});
   final TimelineItem item;
   final String agentName;
+
+  /// Agent name and time above a reply; off for follow-up replies.
+  final bool showHeader;
 
   void _copy(BuildContext context) {
     Clipboard.setData(ClipboardData(text: item.text));
@@ -163,13 +179,15 @@ class MessageBubble extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.only(right: 8),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Text(agentName,
-                style: const TextStyle(color: HuntawayColors.muted, fontSize: 12, fontWeight: FontWeight.w600)),
-            const SizedBox(width: 6),
-            Text(clock(item.timestamp), style: const TextStyle(color: HuntawayColors.faint, fontSize: 11)),
-          ]),
-          const SizedBox(height: 4),
+          if (showHeader) ...[
+            Row(children: [
+              Text(agentName,
+                  style: const TextStyle(color: HuntawayColors.muted, fontSize: 12, fontWeight: FontWeight.w600)),
+              const SizedBox(width: 6),
+              Text(clock(item.timestamp), style: const TextStyle(color: HuntawayColors.faint, fontSize: 11)),
+            ]),
+            const SizedBox(height: 4),
+          ],
           MarkdownBody(
             data: item.text,
             selectable: true,

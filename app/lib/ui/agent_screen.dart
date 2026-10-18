@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../api.dart';
 import '../models.dart';
 import '../sync.dart';
 import 'common.dart';
@@ -26,8 +27,14 @@ class _AgentScreenState extends State<AgentScreen> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
   bool _sending = false;
-  Timer? _clock;
-  final _openedAt = DateTime.now();
+  Timer? _giveUp;
+  bool _waitedLongEnough = false;
+  MachineConnection? _connection;
+
+  /// Entries of the timeline, rebuilt only when it changes.
+  List<Entry> _entries = const [];
+  int _entriesVersion = -1;
+  int _entriesGeneration = -1;
 
   String get _key => '${widget.machineId}/${widget.agentId}';
 
@@ -36,17 +43,20 @@ class _AgentScreenState extends State<AgentScreen> {
     super.initState();
     openAgentKey = _key;
     _scroll.addListener(_maybeLoadOlder);
-    // Refresh relative times in the live status line.
-    _clock = Timer.periodic(const Duration(seconds: 15), (_) => mounted ? setState(() {}) : null);
+    // A just-created agent shows up a moment after the request returns.
+    _giveUp = Timer(const Duration(seconds: 20), () => mounted ? setState(() => _waitedLongEnough = true) : null);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      AppScope.of(context).connection(widget.machineId)?.loadTimeline(widget.agentId);
+      if (!mounted) return;
+      _connection = AppScope.read(context).connection(widget.machineId)?..watch(widget.agentId);
+      _connection?.loadTimeline(widget.agentId);
     });
   }
 
   @override
   void dispose() {
     if (openAgentKey == _key) openAgentKey = null;
-    _clock?.cancel();
+    _connection?.unwatch(widget.agentId);
+    _giveUp?.cancel();
     _input.dispose();
     _scroll.dispose();
     super.dispose();
@@ -54,9 +64,21 @@ class _AgentScreenState extends State<AgentScreen> {
 
   void _maybeLoadOlder() {
     // The list is reversed: the top of the conversation is the scroll end.
-    if (_scroll.position.pixels > _scroll.position.maxScrollExtent - 400) {
-      AppScope.of(context).connection(widget.machineId)?.loadOlder(widget.agentId);
+    if (_scroll.position.pixels < _scroll.position.maxScrollExtent - 400) return;
+    final c = AppScope.read(context).connection(widget.machineId);
+    // After a failure, only the "Load earlier" button retries: scrolling
+    // must not fire a request per pixel while offline.
+    if (c == null || c.timeline(widget.agentId).olderError != null) return;
+    c.loadOlder(widget.agentId);
+  }
+
+  List<Entry> _entriesOf(TimelineState t) {
+    if (t.version != _entriesVersion || t.generation != _entriesGeneration) {
+      _entries = buildEntries(t.items).reversed.toList();
+      _entriesVersion = t.version;
+      _entriesGeneration = t.generation;
     }
+    return _entries;
   }
 
   Future<void> _run(Future<void> Function() action) async {
@@ -78,10 +100,10 @@ class _AgentScreenState extends State<AgentScreen> {
     await _run(() async {
       if (freeText != null) {
         // Typed answer to a structured question.
-        await c.client.choose(agent.id, freeText.number, text: text);
+        if (!await c.answer(agent, number: freeText.number, text: text)) return;
       } else if (pending) {
         // Typing during an approval = reject and explain (PRD §13.3).
-        await c.client.deny(agent.id, text);
+        if (!await c.answer(agent, text: text)) return;
       } else {
         await c.client.sendMessage(agent.id, text);
       }
@@ -89,16 +111,49 @@ class _AgentScreenState extends State<AgentScreen> {
     });
   }
 
+  /// Esc. While the agent waits on a prompt, Esc denies it: the bridge
+  /// refuses unless the user confirms.
+  Future<void> _interrupt(MachineConnection c, Agent agent) async {
+    await _run(() async {
+      try {
+        await c.client.interrupt(agent.id);
+      } on BridgeException catch (e) {
+        if (e.code != 'agent_blocked' || !mounted) rethrow;
+        final force = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('The agent is waiting for an answer'),
+            content: const Text('Interrupting now denies its pending request.'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+              FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Interrupt anyway')),
+            ],
+          ),
+        );
+        if (force == true) await c.client.interrupt(agent.id, force: true);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
-    final model = AppScope.of(context);
+    // Listens to this machine and this timeline only, not to every event of
+    // every machine.
+    final model = AppScope.read(context);
     final c = model.connection(widget.machineId);
-    final agent = c?.agents[widget.agentId];
-    if (c == null || agent == null) {
-      // A just-created agent shows up a moment after the request returns.
-      final waiting = DateTime.now().difference(_openedAt) < const Duration(seconds: 20);
-      if (waiting) Future.delayed(const Duration(seconds: 1), () => mounted ? setState(() {}) : null);
-      return Scaffold(
+    if (c == null) return _missing(waiting: false);
+    final timeline = c.timeline(widget.agentId);
+    return ListenableBuilder(
+      listenable: Listenable.merge([c, timeline]),
+      builder: (context, _) {
+        final agent = c.agents[widget.agentId];
+        if (agent == null) return _missing(waiting: !_waitedLongEnough);
+        return _screen(model, c, agent, timeline);
+      },
+    );
+  }
+
+  Widget _missing({required bool waiting}) => Scaffold(
         appBar: AppBar(),
         body: Center(
           child: waiting
@@ -106,11 +161,13 @@ class _AgentScreenState extends State<AgentScreen> {
               : const Text('This agent no longer exists', style: TextStyle(color: HuntawayColors.muted)),
         ),
       );
-    }
-    final timeline = c.timeline(agent.id);
-    final entries = buildEntries(timeline.items).reversed.toList();
+
+  Widget _screen(AppModel model, MachineConnection c, Agent agent, TimelineState timeline) {
+    final entries = _entriesOf(timeline);
     final canWrite = c.machine.can('agents.message');
     final pending = agent.interaction != null && agent.interaction!.reason != 'explicit_question';
+    final answered = c.answered(agent);
+    final blocked = agent.attention.status == AttentionStatus.blocked;
 
     return Scaffold(
       appBar: AppBar(
@@ -148,10 +205,11 @@ class _AgentScreenState extends State<AgentScreen> {
                 builder: (_) => TerminalScreen(connection: c, agent: agent),
               )),
             ),
-          if (c.machine.can('agents.interrupt'))
+          // Esc would deny a pending prompt: use the card instead.
+          if (c.machine.can('agents.interrupt') && !blocked)
             PopupMenuButton<String>(
               onSelected: (v) {
-                if (v == 'stop') _run(() => c.client.interrupt(agent.id));
+                if (v == 'stop') _interrupt(c, agent);
               },
               itemBuilder: (_) => [
                 const PopupMenuItem(value: 'stop', child: Text('Interrupt (Esc)')),
@@ -174,45 +232,40 @@ class _AgentScreenState extends State<AgentScreen> {
               style: const TextStyle(color: HuntawayColors.muted, fontSize: 13),
             ),
           ),
+        if (timeline.error != null && timeline.items.isNotEmpty)
+          _ErrorLine('Could not refresh: ${timeline.error}', onRetry: () => c.loadTimeline(agent.id, refresh: true)),
         Expanded(
-          child: timeline.loading && timeline.items.isEmpty
-              ? const Center(child: CircularProgressIndicator())
-              : ListView.builder(
-                  controller: _scroll,
-                  reverse: true,
-                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
-                  itemCount: entries.length + 1,
-                  itemBuilder: (context, i) {
-                    if (i == entries.length) {
-                      return Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Center(
-                          child: timeline.loading
-                              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                              : Text(timeline.hasMore ? '' : 'Start of the conversation',
-                                  style: const TextStyle(color: HuntawayColors.muted, fontSize: 12)),
-                        ),
-                      );
-                    }
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 5),
-                      child: switch (entries[i]) {
-                        MessageEntry(:final item) => MessageBubble(item, agentName: agent.displayName),
-                        ActivityEntry e => ActivityTile(e),
-                        QuestionEntry(:final item) => QuestionTile(item),
-                        NoticeEntry e => NoticeTile(e),
+          child: timeline.items.isEmpty && timeline.error != null && !timeline.loading
+              ? _LoadError(timeline.error!, onRetry: () => c.loadTimeline(agent.id, refresh: true))
+              : timeline.loading && timeline.items.isEmpty
+                  ? const Center(child: CircularProgressIndicator())
+                  : ListView.builder(
+                      controller: _scroll,
+                      reverse: true,
+                      padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+                      itemCount: entries.length + 1,
+                      itemBuilder: (context, i) {
+                        if (i == entries.length) return _top(c, agent, timeline);
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 5),
+                          child: switch (entries[i]) {
+                            MessageEntry(:final item, :final continued) =>
+                              MessageBubble(item, agentName: agent.displayName, showHeader: !continued),
+                            ActivityEntry e => ActivityTile(e),
+                            QuestionEntry(:final item) => QuestionTile(item),
+                            NoticeEntry e => NoticeTile(e),
+                          },
+                        );
                       },
-                    );
-                  },
-                ),
+                    ),
         ),
         if (agent.attention.status == AttentionStatus.working) _LiveLine(agent: agent, timeline: timeline),
         if (pending && c.machine.can('agents.approve'))
           InteractionCard(
             agent: agent,
-            busy: _sending,
-            onChoose: (n) => _run(() => c.client.choose(agent.id, n)),
-            onDeny: () => _run(() => c.client.deny(agent.id, null)),
+            busy: _sending || answered,
+            onChoose: (n) => _run(() => c.answer(agent, number: n)),
+            onDeny: () => _run(() => c.answer(agent)),
           ),
         if (canWrite)
           SafeArea(
@@ -245,7 +298,7 @@ class _AgentScreenState extends State<AgentScreen> {
                       fixedSize: const Size(44, 44),
                     ),
                     tooltip: 'Stop',
-                    onPressed: _sending ? null : () => _run(() => c.client.interrupt(agent.id)),
+                    onPressed: _sending || !c.machine.can('agents.interrupt') ? null : () => _interrupt(c, agent),
                     icon: const Icon(Icons.stop_rounded),
                   )
                 else
@@ -255,7 +308,9 @@ class _AgentScreenState extends State<AgentScreen> {
                       disabledBackgroundColor: HuntawayColors.surfaceHigh,
                     ),
                     tooltip: pending ? 'Deny and explain' : 'Send',
-                    onPressed: _sending || _input.text.trim().isEmpty ? null : () => _submit(c, agent),
+                    onPressed: _sending || (pending && answered) || _input.text.trim().isEmpty
+                        ? null
+                        : () => _submit(c, agent),
                     icon: _sending
                         ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                         : const Icon(Icons.arrow_upward_rounded),
@@ -266,18 +321,103 @@ class _AgentScreenState extends State<AgentScreen> {
       ]),
     );
   }
+
+  /// Top of the conversation: older pages, their errors, or its start.
+  Widget _top(MachineConnection c, Agent agent, TimelineState t) {
+    const muted = TextStyle(color: HuntawayColors.muted, fontSize: 12);
+    final Widget child;
+    if (t.loadingOlder) {
+      child = const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2));
+    } else if (t.olderError != null) {
+      child = Column(children: [
+        Text(t.olderError!, style: const TextStyle(color: HuntawayColors.error, fontSize: 12), textAlign: TextAlign.center),
+        TextButton(onPressed: () => c.loadOlder(agent.id), child: const Text('Retry')),
+      ]);
+    } else if (t.hasMore && t.loaded) {
+      child = TextButton(onPressed: () => c.loadOlder(agent.id), child: const Text('Load earlier messages'));
+    } else {
+      child = Text(t.hasMore ? '' : 'Start of the conversation', style: muted);
+    }
+    return Padding(padding: const EdgeInsets.all(8), child: Center(child: child));
+  }
+}
+
+class _LoadError extends StatelessWidget {
+  const _LoadError(this.error, {required this.onRetry});
+  final String error;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Text('Could not load the conversation', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 6),
+            Text(error, textAlign: TextAlign.center, style: const TextStyle(color: HuntawayColors.muted, fontSize: 13)),
+            const SizedBox(height: 12),
+            OutlinedButton(onPressed: onRetry, child: const Text('Retry')),
+          ]),
+        ),
+      );
+}
+
+class _ErrorLine extends StatelessWidget {
+  const _ErrorLine(this.text, {required this.onRetry});
+  final String text;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        margin: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+        padding: const EdgeInsets.only(left: 12),
+        decoration: BoxDecoration(
+          color: HuntawayColors.error.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(children: [
+          Expanded(
+            child: Text(text,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: HuntawayColors.error, fontSize: 12.5)),
+          ),
+          TextButton(onPressed: onRetry, child: const Text('Retry')),
+        ]),
+      );
 }
 
 /// "● Running npm test… 0:42" above the composer while the agent works.
-class _LiveLine extends StatelessWidget {
+class _LiveLine extends StatefulWidget {
   const _LiveLine({required this.agent, required this.timeline});
   final Agent agent;
   final TimelineState timeline;
 
   @override
+  State<_LiveLine> createState() => _LiveLineState();
+}
+
+class _LiveLineState extends State<_LiveLine> {
+  Timer? _clock;
+
+  @override
+  void initState() {
+    super.initState();
+    // Refresh the relative time; only this line rebuilds.
+    _clock = Timer.periodic(const Duration(seconds: 15), (_) => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _clock?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final agent = widget.agent;
     TimelineItem? lastCall;
-    for (final item in timeline.items.reversed) {
+    for (final item in widget.timeline.items.reversed) {
       if (item.type == 'tool_call' && !item.sidechain) {
         lastCall = item;
         break;
@@ -347,16 +487,28 @@ class InteractionCard extends StatelessWidget {
     final question = i.questions.isNotEmpty ? i.questions.first : null;
     final options = i.options;
 
+    // Many options plus the keyboard would overflow: cap the card and let
+    // it scroll.
+    final media = MediaQuery.of(context);
+    final maxHeight = (media.size.height - media.viewInsets.bottom - media.padding.vertical) * 0.5;
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+      constraints: BoxConstraints(maxHeight: maxHeight < 160 ? 160 : maxHeight),
       decoration: BoxDecoration(
         color: HuntawayColors.surface,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: HuntawayColors.blocked.withValues(alpha: 0.55)),
         boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 18, offset: Offset(0, -2))],
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+        child: _content(i, title, command, question, options),
+      ),
+    );
+  }
+
+  Widget _content(Interaction i, String title, String? command, Question? question, List<ScreenOption> options) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Row(children: [
           StatusDot(agent.attention, size: 7),
           const SizedBox(width: 4),
@@ -416,8 +568,7 @@ class InteractionCard extends StatelessWidget {
               const Text('Or type an answer below.',
                   style: TextStyle(color: HuntawayColors.muted, fontSize: 12.5)),
           ]),
-      ]),
-    );
+      ]);
   }
 }
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../api.dart';
 import '../models.dart';
 import '../sync.dart';
 
@@ -411,11 +412,22 @@ class AppScope extends InheritedNotifier<AppModel> {
 
   static AppModel of(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<AppScope>()!.notifier!;
+
+  /// The model without rebuilding when it changes (callbacks, or widgets
+  /// listening to a narrower notifier).
+  static AppModel read(BuildContext context) =>
+      context.getInheritedWidgetOfExactType<AppScope>()!.notifier!;
 }
+
+String errorMessage(Object error) => switch (error) {
+      BridgeException(code: 'interaction_changed') => 'The agent is now asking something else',
+      BridgeException(code: 'agent_blocked') => 'The agent is waiting for an answer',
+      _ => error.toString(),
+    };
 
 void showError(BuildContext context, Object error) {
   ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-    content: Text(error.toString()),
+    content: Text(errorMessage(error)),
     backgroundColor: HuntawayColors.error,
     behavior: SnackBarBehavior.floating,
   ));
