@@ -70,4 +70,6 @@ configurations.all {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+    // FileProvider for the self-update installer (MainActivity).
+    implementation("androidx.core:core:1.13.1")
 }

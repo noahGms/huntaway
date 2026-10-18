@@ -9,6 +9,7 @@ import 'ui/common.dart';
 import 'ui/inbox_screen.dart';
 import 'ui/pairing_screen.dart';
 import 'ui/settings_screen.dart';
+import 'updater.dart';
 
 final navigatorKey = GlobalKey<NavigatorState>();
 
@@ -52,6 +53,7 @@ class _HuntawayAppState extends State<HuntawayApp> with WidgetsBindingObserver {
       if (parts.length == 2) _openAgent(parts[0], parts[1]);
     });
     if (widget.model.connections.isNotEmpty) _notifier.requestPermission();
+    Updater.instance.check();
   }
 
   int _machineCount = 0;
@@ -103,6 +105,7 @@ class _HuntawayAppState extends State<HuntawayApp> with WidgetsBindingObserver {
       _pausedAt = null;
       widget.model.reconnectAll(force: away);
       BackgroundLink.instance.stop();
+      Updater.instance.resumed();
     } else if (state == AppLifecycleState.paused) {
       _pausedAt ??= DateTime.now();
       // No push distributor: keep the WebSocket alive in the background.
@@ -153,19 +156,22 @@ class _HomeShellState extends State<HomeShell> {
         ProjectsScreen(),
         SettingsScreen(),
       ]),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _tab,
-        onDestinationSelected: (i) => setState(() => _tab = i),
-        destinations: [
-          NavigationDestination(
-            icon: Badge(isLabelVisible: blocked > 0, label: Text('$blocked'), child: const Icon(Icons.inbox_outlined)),
-            selectedIcon: Badge(isLabelVisible: blocked > 0, label: Text('$blocked'), child: const Icon(Icons.inbox)),
-            label: 'Inbox',
-          ),
-          const NavigationDestination(icon: Icon(Icons.dns_outlined), selectedIcon: Icon(Icons.dns), label: 'Machines'),
-          const NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: 'Settings'),
-        ],
-      ),
+      bottomNavigationBar: Column(mainAxisSize: MainAxisSize.min, children: [
+        const UpdateBanner(),
+        NavigationBar(
+          selectedIndex: _tab,
+          onDestinationSelected: (i) => setState(() => _tab = i),
+          destinations: [
+            NavigationDestination(
+              icon: Badge(isLabelVisible: blocked > 0, label: Text('$blocked'), child: const Icon(Icons.inbox_outlined)),
+              selectedIcon: Badge(isLabelVisible: blocked > 0, label: Text('$blocked'), child: const Icon(Icons.inbox)),
+              label: 'Inbox',
+            ),
+            const NavigationDestination(icon: Icon(Icons.dns_outlined), selectedIcon: Icon(Icons.dns), label: 'Machines'),
+            const NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: 'Settings'),
+          ],
+        ),
+      ]),
     );
   }
 }
@@ -264,6 +270,59 @@ class _Step extends StatelessWidget {
           ),
         ),
       ]),
+    );
+  }
+}
+
+/// "Update available" strip above the tab bar, with the download progress.
+class UpdateBanner extends StatelessWidget {
+  const UpdateBanner({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final updater = Updater.instance;
+    return ListenableBuilder(
+      listenable: updater,
+      builder: (context, _) {
+        final info = updater.available;
+        if (info == null || (updater.dismissed && updater.progress == null)) return const SizedBox.shrink();
+        final progress = updater.progress;
+        return Container(
+          margin: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+          padding: const EdgeInsets.fromLTRB(12, 4, 4, 4),
+          decoration: BoxDecoration(
+            color: HuntawayColors.surfaceHigh,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: HuntawayColors.border),
+          ),
+          child: Row(children: [
+            const Icon(Icons.system_update_outlined, size: 18, color: HuntawayColors.accent),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+                Text(
+                  progress != null
+                      ? 'Downloading ${info.version}… ${(progress * 100).round()}%'
+                      : updater.error ?? 'Update available (${info.version})',
+                  style: TextStyle(
+                      fontSize: 13.5, color: updater.error != null ? HuntawayColors.error : HuntawayColors.text),
+                ),
+                if (progress != null) ...[
+                  const SizedBox(height: 4),
+                  LinearProgressIndicator(value: progress == 0 ? null : progress, minHeight: 2),
+                ],
+              ]),
+            ),
+            if (progress == null) ...[
+              TextButton(
+                onPressed: updater.dismiss,
+                child: const Text('Later', style: TextStyle(color: HuntawayColors.muted)),
+              ),
+              TextButton(onPressed: updater.downloadAndInstall, child: const Text('Update')),
+            ],
+          ]),
+        );
+      },
     );
   }
 }

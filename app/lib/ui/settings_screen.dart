@@ -4,6 +4,7 @@ import '../keepalive.dart';
 import '../notifications.dart';
 import '../sync.dart';
 import 'common.dart';
+import '../updater.dart';
 import 'pairing_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -47,6 +48,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK'))],
       ),
     );
+  }
+
+  Future<void> _checkForUpdates() async {
+    final updater = Updater.instance;
+    final info = await updater.check(force: true);
+    if (!mounted || updater.error != null) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(info == null ? 'Huntaway is up to date' : 'Version ${info.version} is available'),
+    ));
   }
 
   Future<void> _choosePush() async {
@@ -186,11 +196,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
           },
         ),
         const _Header('About'),
-        const ListTile(
-          leading: HuntawayLogo(size: 36),
-          title: Text('Huntaway 0.1'),
-          subtitle: Text('Drive your Herdr agents from your phone.',
-              style: TextStyle(color: HuntawayColors.muted, fontSize: 12.5)),
+        ListenableBuilder(
+          listenable: Updater.instance,
+          builder: (context, _) {
+            final updater = Updater.instance;
+            return Column(children: [
+              ListTile(
+                leading: const HuntawayLogo(size: 36),
+                title: Text(updater.version == null ? 'Huntaway' : 'Huntaway ${updater.version}'),
+                subtitle: const Text('Drive your Herdr agents from your phone.',
+                    style: TextStyle(color: HuntawayColors.muted, fontSize: 12.5)),
+              ),
+              if (updater.supported)
+                ListTile(
+                  leading: const Icon(Icons.system_update_outlined),
+                  title: const Text('Check for updates'),
+                  subtitle: Text(
+                    updater.checking
+                        ? 'Checking…'
+                        : updater.progress != null
+                            ? 'Downloading… ${(updater.progress! * 100).round()}%'
+                            : updater.available != null
+                                ? 'Version ${updater.available!.version} available'
+                                : updater.error ?? 'Version ${updater.version ?? '?'} (build ${updater.build})',
+                    style: const TextStyle(color: HuntawayColors.muted, fontSize: 12.5),
+                  ),
+                  trailing: updater.available != null && updater.progress == null
+                      ? TextButton(onPressed: updater.downloadAndInstall, child: const Text('Update'))
+                      : null,
+                  onTap: updater.checking || updater.progress != null ? null : _checkForUpdates,
+                ),
+            ]);
+          },
         ),
       ]),
     );

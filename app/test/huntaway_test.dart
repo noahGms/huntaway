@@ -10,6 +10,7 @@ import 'package:huntaway/api.dart';
 import 'package:huntaway/cache.dart';
 import 'package:huntaway/models.dart';
 import 'package:huntaway/sync.dart';
+import 'package:huntaway/updater.dart';
 import 'package:huntaway/ui/timeline.dart';
 
 TimelineItem item(int n, String type, [Map<String, dynamic> extra = const {}]) =>
@@ -261,5 +262,16 @@ void main() {
       expect(c.answered(agent), isFalse);
       c.dispose();
     });
+  });
+
+  test('update manifest parses the release android.json', () {
+    final info = UpdateInfo.parse({
+      'version': '1.2.3',
+      'version_code': 10203,
+      'url': 'https://github.com/noahGms/huntaway/releases/download/v1.2.3/huntaway-android-arm64.apk',
+      'sha256': 'ABCDEF',
+    });
+    expect(info.versionCode, 10203);
+    expect(info.sha256, 'abcdef');
   });
 }
