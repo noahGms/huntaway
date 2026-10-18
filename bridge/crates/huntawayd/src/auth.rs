@@ -7,8 +7,12 @@
 //!
 //! The CLI and the running daemon share these files; the daemon re-reads
 //! them when they change, so `pair` and `devices revoke` need no IPC.
+//! Inside one process the device list lives in memory behind a mutex held
+//! for each whole read-modify-write, so concurrent requests cannot overwrite
+//! each other's changes.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
@@ -167,14 +171,29 @@ pub struct Pairings {
     pub pending: Vec<PendingPairing>,
 }
 
-/// File-backed store shared by the CLI and the daemon.
+/// `devices.json` as last read or written, with the file signature it had.
+#[derive(Default)]
+struct DeviceCache {
+    signature: Option<(SystemTime, u64)>,
+    devices: Devices,
+}
+
+fn file_signature(path: &Path) -> Option<(SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// File-backed store shared by the CLI and the daemon. Clones share the
+/// same in-memory device list.
+#[derive(Clone)]
 pub struct Store {
     dir: PathBuf,
+    devices: Arc<Mutex<DeviceCache>>,
 }
 
 impl Store {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self { dir, devices: Arc::default() }
     }
 
     pub fn open_default() -> Self {
@@ -205,77 +224,110 @@ impl Store {
     pub fn ensure_local_token(&self) -> Result<()> {
         let path = self.local_token_path();
         let all: Vec<String> = ALL_PERMISSIONS.iter().map(|s| s.to_string()).collect();
-        let mut devices = self.devices()?;
-        if let Ok(token) = std::fs::read_to_string(&path) {
-            let hash = sha256_b64(token.trim().as_bytes());
-            if let Some(device) = devices.devices.iter_mut().find(|d| d.local_only && d.token_sha256 == hash) {
-                if device.permissions != all {
+        let token = std::fs::read_to_string(&path).ok();
+        let created = self.update_devices(|devices| {
+            if let Some(token) = &token {
+                let hash = sha256_b64(token.trim().as_bytes());
+                if let Some(device) = devices.devices.iter_mut().find(|d| d.local_only && d.token_sha256 == hash) {
+                    let changed = device.permissions != all;
                     device.permissions = all;
-                    self.save_devices(&devices)?;
+                    return (changed, None);
                 }
-                return Ok(());
             }
+            devices.devices.retain(|d| !d.local_only);
+            let token = random_token(32);
+            devices.devices.push(Device {
+                id: format!("d_{}", random_token(6)),
+                name: LOCAL_DEVICE_NAME.into(),
+                token_sha256: sha256_b64(token.as_bytes()),
+                permissions: all,
+                created_at: now_secs(),
+                last_seen: None,
+                push_endpoint: None,
+                local_only: true,
+            });
+            (true, Some(token))
+        })?;
+        match created {
+            Some(token) => write_private(&path, &token),
+            None => Ok(()),
         }
-        devices.devices.retain(|d| !d.local_only);
-        let token = random_token(32);
-        devices.devices.push(Device {
-            id: format!("d_{}", random_token(6)),
-            name: LOCAL_DEVICE_NAME.into(),
-            token_sha256: sha256_b64(token.as_bytes()),
-            permissions: all,
-            created_at: now_secs(),
-            last_seen: None,
-            push_endpoint: None,
-            local_only: true,
-        });
-        self.save_devices(&devices)?;
-        write_private(&path, &token)
+    }
+
+    /// Runs `f` on the current device list under the store lock, reloading
+    /// it first if another process changed the file. `f` returns whether it
+    /// changed the list (then saved) and a value passed through.
+    fn update_devices<T>(&self, f: impl FnOnce(&mut Devices) -> (bool, T)) -> Result<T> {
+        let mut cache = self.devices.lock().unwrap();
+        let path = self.devices_path();
+        let signature = file_signature(&path);
+        if cache.signature.is_none() || cache.signature != signature {
+            cache.devices = read_json(&path)?;
+            cache.signature = signature;
+        }
+        let (changed, value) = f(&mut cache.devices);
+        if changed {
+            write_private(&path, &serde_json::to_string_pretty(&cache.devices)?)?;
+            cache.signature = file_signature(&path);
+        }
+        Ok(value)
     }
 
     pub fn devices(&self) -> Result<Devices> {
-        read_json(&self.devices_path())
-    }
-
-    pub fn save_devices(&self, devices: &Devices) -> Result<()> {
-        write_private(&self.devices_path(), &serde_json::to_string_pretty(devices)?)
+        self.update_devices(|d| (false, Devices { devices: d.devices.clone() }))
     }
 
     /// Finds the device owning `token` and records it as seen.
     pub fn authenticate(&self, token: &str) -> Result<Option<Device>> {
         let hash = sha256_b64(token.as_bytes());
-        let mut devices = self.devices()?;
-        let Some(device) = devices.devices.iter_mut().find(|d| d.token_sha256 == hash) else {
-            return Ok(None);
-        };
-        let now = now_secs();
-        // Throttle writes: one per minute is enough for "last seen".
-        if device.last_seen.is_none_or(|t| now.saturating_sub(t) > 60) {
-            device.last_seen = Some(now);
-            let found = device.clone();
-            self.save_devices(&devices)?;
-            return Ok(Some(found));
-        }
-        Ok(Some(device.clone()))
+        self.update_devices(|devices| {
+            let Some(device) = devices.devices.iter_mut().find(|d| d.token_sha256 == hash) else {
+                return (false, None);
+            };
+            let now = now_secs();
+            // Throttle writes: one per minute is enough for "last seen".
+            let stale = device.last_seen.is_none_or(|t| now.saturating_sub(t) > 60);
+            if stale {
+                device.last_seen = Some(now);
+            }
+            (stale, Some(device.clone()))
+        })
     }
 
     pub fn set_push_endpoint(&self, device_id: &str, endpoint: Option<String>) -> Result<()> {
-        let mut devices = self.devices()?;
-        let Some(device) = devices.devices.iter_mut().find(|d| d.id == device_id) else {
-            bail!("appareil inconnu");
-        };
-        device.push_endpoint = endpoint;
-        self.save_devices(&devices)
+        let found = self.update_devices(|devices| match devices.devices.iter_mut().find(|d| d.id == device_id) {
+            Some(device) => {
+                device.push_endpoint = endpoint;
+                (true, true)
+            }
+            None => (false, false),
+        })?;
+        if !found {
+            bail!("unknown device");
+        }
+        Ok(())
+    }
+
+    /// Unregisters `endpoint` from whichever device still uses it (the push
+    /// service said it no longer exists).
+    pub fn drop_push_endpoint(&self, endpoint: &str) -> Result<()> {
+        self.update_devices(|devices| {
+            let mut changed = false;
+            for device in devices.devices.iter_mut().filter(|d| d.push_endpoint.as_deref() == Some(endpoint)) {
+                device.push_endpoint = None;
+                changed = true;
+            }
+            (changed, ())
+        })
     }
 
     pub fn revoke(&self, device_id: &str) -> Result<bool> {
-        let mut devices = self.devices()?;
-        let before = devices.devices.len();
-        devices.devices.retain(|d| d.id != device_id);
-        let removed = devices.devices.len() != before;
-        if removed {
-            self.save_devices(&devices)?;
-        }
-        Ok(removed)
+        self.update_devices(|devices| {
+            let before = devices.devices.len();
+            devices.devices.retain(|d| d.id != device_id);
+            let removed = devices.devices.len() != before;
+            (removed, removed)
+        })
     }
 
     /// Creates a one-time pairing code (returned in clear, stored hashed).
@@ -316,9 +368,10 @@ impl Store {
             push_endpoint: None,
             local_only: false,
         };
-        let mut devices = self.devices()?;
-        devices.devices.push(device.clone());
-        self.save_devices(&devices)?;
+        self.update_devices(|devices| {
+            devices.devices.push(device.clone());
+            (true, ())
+        })?;
         Ok(Some((device, token)))
     }
 }
@@ -363,6 +416,40 @@ mod tests {
         store.ensure_local_token().unwrap();
         assert!(store.authenticate(&token).unwrap().is_none());
         assert_eq!(store.devices().unwrap().devices.len(), 1);
+    }
+
+    #[test]
+    fn concurrent_updates_are_not_lost() {
+        let store = temp_store();
+        let code = store.create_pairing(DEFAULT_PERMISSIONS.iter().map(|s| s.to_string()).collect()).unwrap();
+        let (device, token) = store.redeem_pairing(&code, "Pixel").unwrap().unwrap();
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let store = store.clone();
+                let token = token.clone();
+                let id = device.id.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..20 {
+                        store.authenticate(&token).unwrap();
+                    }
+                    if i == 0 {
+                        store.set_push_endpoint(&id, Some("https://push.example/x".into())).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(store.devices().unwrap().devices[0].push_endpoint.as_deref(), Some("https://push.example/x"));
+        // Another process (the CLI) writing the file is picked up.
+        let other = Store::new(store.dir().to_path_buf());
+        let code = other.create_pairing(vec!["agents.read".into()]).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        other.redeem_pairing(&code, "Tablet").unwrap().unwrap();
+        assert_eq!(store.devices().unwrap().devices.len(), 2);
+        store.drop_push_endpoint("https://push.example/x").unwrap();
+        assert!(other.devices().unwrap().devices[0].push_endpoint.is_none());
     }
 
     #[test]

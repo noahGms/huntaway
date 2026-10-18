@@ -115,10 +115,11 @@ async fn run() -> Result<()> {
     let (engine, notifications) = engine::Engine::new(config, identity.machine_id.clone());
     engine.start();
     let presence = Arc::new(presence::Presence::default());
-    tokio::spawn(push::run(notifications, Store::new(dir.clone()), identity.machine_id.clone(), presence.clone()));
+    // One store for the whole daemon: device writes are serialized in memory.
+    let store = Store::new(dir);
+    tokio::spawn(push::run(notifications, store.clone(), identity.machine_id.clone(), presence.clone()));
 
     info!(machine = %engine.machine.machine_name, id = %engine.machine.machine_id, "huntawayd {} démarré", env!("CARGO_PKG_VERSION"));
-    let store = Store::new(dir);
     if let Err(e) = store.ensure_local_token() {
         warn!(error = %e, "token local non créé : l'app desktop devra être appairée");
     }
