@@ -2,7 +2,8 @@ name: Release
 
 # Push a tag `v0.1.0` → GitHub release with the huntawayd binaries, install.sh,
 # the Android APK, the desktop app for macOS (arm64 .dmg) and Linux (x86_64
-# AppImage + .deb), the signed updater artifacts with latest.json, and SHA256SUMS. install.sh downloads from the latest release.
+# AppImage + .deb), the signed updater artifacts with latest.json, android.json
+# for the app's self-update, and SHA256SUMS. install.sh downloads from the latest release.
 #
 # Desktop secrets: TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD) sign updates;
 # APPLE_* (optional) sign and notarize the app.
@@ -70,7 +71,20 @@ jobs:
           IFS=. read -r major minor patch <<< "${version%%-*}"
           code=$((major * 10000 + minor * 100 + patch))
           flutter build apk --release --target-platform android-arm64 --build-name "$version" --build-number "$code"
-      - run: mkdir -p out && cp app/build/app/outputs/flutter-apk/app-release.apk out/huntaway-android-arm64.apk
+      - name: Collect APK and android.json
+        run: |
+          mkdir -p out
+          apk=huntaway-android-arm64.apk
+          cp app/build/app/outputs/flutter-apk/app-release.apk "out/$apk"
+          # Read by the app's self-update (releases/latest/download/android.json).
+          version="${GITHUB_REF_NAME#v}"
+          IFS=. read -r major minor patch <<< "${version%%-*}"
+          code=$((major * 10000 + minor * 100 + patch))
+          jq -n --arg v "$version" --argjson code "$code" \
+            --arg url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/$apk" \
+            --arg sha "$(sha256sum "out/$apk" | cut -d' ' -f1)" \
+            '{version: $v, version_code: $code, url: $url, sha256: $sha}' > out/android.json
+          cat out/android.json
       - uses: actions/upload-artifact@v4
         with: { name: android, path: out }
 
