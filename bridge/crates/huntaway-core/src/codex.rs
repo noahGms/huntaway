@@ -114,6 +114,23 @@ pub fn epoch_of(ts: &str) -> Option<u64> {
     u64::try_from(days * 86_400 + h * 3600 + min * 60 + s).ok()
 }
 
+/// RFC 3339 UTC timestamp (`2026-10-08T07:15:21Z`) of seconds since the epoch.
+pub fn rfc3339_of(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    // Civil from days (Howard Hinnant).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
 fn find_rollout(dir: &Path, suffix: &str) -> Option<PathBuf> {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).collect();
     // Date directories sort lexically: newest first.
@@ -582,6 +599,9 @@ mod tests {
         assert_eq!(epoch_of("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(epoch_of("2026-10-08T07:15:21.283Z"), Some(1_791_443_721));
         assert_eq!(epoch_of("nope"), None);
+        assert_eq!(rfc3339_of(1_791_443_721), "2026-10-08T07:15:21Z");
+        assert_eq!(rfc3339_of(0), "1970-01-01T00:00:00Z");
+        assert_eq!(epoch_of(&rfc3339_of(951_825_600)), Some(951_825_600)); // 2000-02-29
     }
 
     #[test]
