@@ -290,8 +290,8 @@ struct DenyBody {
 
 async fn deny(State(state): State<Shared>, auth: Auth, Path(id): Path<String>, Json(body): Json<DenyBody>) -> ApiResult<Json<Value>> {
     auth.require("agents.approve")?;
-    state.engine.deny(&id, body.text.as_deref(), body.interaction_id.as_deref()).await?;
-    Ok(Json(json!({ "ok": true })))
+    let message_sent = state.engine.deny(&id, body.text.as_deref(), body.interaction_id.as_deref()).await?;
+    Ok(Json(json!({ "ok": true, "message_sent": message_sent })))
 }
 
 #[derive(Deserialize)]
