@@ -542,6 +542,26 @@ async fn presence(State(state): State<Shared>, auth: Auth, Json(body): Json<Pres
 struct StreamQuery {
     since: Option<u64>,
     epoch: Option<String>,
+    /// Opt-in filter of `agent.item` events: comma-separated agent ids
+    /// (empty = none). Absent = every agent. Changed later with a client
+    /// message `{"type":"items","agent_ids":[…] | null}`.
+    items: Option<String>,
+}
+
+/// Agents whose `agent.item` events a stream client wants; `None` = all.
+type ItemFilter = Option<std::collections::HashSet<String>>;
+
+fn wanted(filter: &ItemFilter, event: &huntaway_api::Envelope) -> bool {
+    match filter {
+        Some(ids) if event.kind == "agent.item" => event.agent_id.as_ref().is_some_and(|id| ids.contains(id)),
+        _ => true,
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum StreamCommand {
+    Items { agent_ids: Option<Vec<String>> },
 }
 
 async fn stream(State(state): State<Shared>, auth: Auth, Query(q): Query<StreamQuery>, ws: WebSocketUpgrade) -> ApiResult<Response> {
@@ -553,6 +573,7 @@ async fn stream(State(state): State<Shared>, auth: Auth, Query(q): Query<StreamQ
 async fn serve_stream(socket: WebSocket, state: Shared, q: StreamQuery) {
     let engine = &state.engine;
     let (mut tx, mut rx) = socket.split();
+    let mut filter: ItemFilter = q.items.as_deref().map(|ids| ids.split(',').filter(|id| !id.is_empty()).map(str::to_string).collect());
     // Subscribe before reading the journal so nothing falls in between.
     let mut live = engine.subscribe();
 
@@ -567,6 +588,9 @@ async fn serve_stream(socket: WebSocket, state: Shared, q: StreamQuery) {
                 }
                 for event in events {
                     last = event.seq;
+                    if !wanted(&filter, &event) {
+                        continue;
+                    }
                     if tx.send(Message::Text(serde_json::to_string(&event).unwrap().into())).await.is_err() {
                         return;
                     }
@@ -592,6 +616,9 @@ async fn serve_stream(socket: WebSocket, state: Shared, q: StreamQuery) {
                 Ok(event) if event.seq <= last => {}
                 Ok(event) => {
                     last = event.seq;
+                    if !wanted(&filter, &event) {
+                        continue;
+                    }
                     if tx.send(Message::Text(serde_json::to_string(&event).unwrap().into())).await.is_err() {
                         return;
                     }
@@ -609,6 +636,11 @@ async fn serve_stream(socket: WebSocket, state: Shared, q: StreamQuery) {
                 }
             }
             incoming = rx.next() => match incoming {
+                Some(Ok(Message::Text(text))) => {
+                    if let Ok(StreamCommand::Items { agent_ids }) = serde_json::from_str(&text) {
+                        filter = agent_ids.map(|ids| ids.into_iter().collect());
+                    }
+                }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
                 _ => {}
             },
@@ -678,5 +710,26 @@ async fn serve_terminal(socket: WebSocket, state: Shared, id: String, can_input:
                 _ => {}
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(kind: &str, agent: &str) -> huntaway_api::Envelope {
+        huntaway_api::Envelope { seq: 1, at: 0, kind: kind.into(), agent_id: Some(agent.into()), data: json!({}) }
+    }
+
+    #[test]
+    fn item_filter_only_drops_other_agents_items() {
+        let all: ItemFilter = None;
+        assert!(wanted(&all, &event("agent.item", "a")));
+        let one: ItemFilter = Some(["a".to_string()].into_iter().collect());
+        assert!(wanted(&one, &event("agent.item", "a")));
+        assert!(!wanted(&one, &event("agent.item", "b")));
+        assert!(wanted(&one, &event("agent.updated", "b")));
+        let cmd: StreamCommand = serde_json::from_str(r#"{"type":"items","agent_ids":["x"]}"#).unwrap();
+        assert!(matches!(cmd, StreamCommand::Items { agent_ids: Some(ids) } if ids == ["x"]));
     }
 }
