@@ -19,6 +19,7 @@ import { useShortcuts } from "./hooks/useShortcuts";
 import { fromHistory, liveKey, parseKey, type Conversation } from "./lib/conversations";
 import { isMac } from "./lib/platform";
 import { HistoryPage } from "./pages/HistoryPage";
+import { ProjectPage } from "./pages/ProjectPage";
 import { LocalDaemonCard, ServersPage } from "./pages/ServersPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { machineList, useMachines } from "./store/machines";
@@ -82,6 +83,8 @@ export default function App() {
             <HistoryPage />
           ) : view === "settings" ? (
             <SettingsPage />
+          ) : view === "project" ? (
+            <ProjectPage />
           ) : !ready ? (
             <div className="flex h-full items-center justify-center text-muted">
               <Spinner className="h-5 w-5" />
