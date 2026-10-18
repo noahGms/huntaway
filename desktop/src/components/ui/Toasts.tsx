@@ -14,7 +14,7 @@ export function Toasts() {
         >
           {t.kind === "error" ? <AlertCircle size={15} className="text-error" /> : t.kind === "success" ? <CheckCircle2 size={15} className="text-done" /> : <Info size={15} className="text-muted" />}
           <span className="selectable">{t.text}</span>
-          <button onClick={() => dismiss(t.id)} className="ml-1 text-faint hover:text-text" aria-label="Fermer">
+          <button onClick={() => dismiss(t.id)} className="ml-1 text-faint hover:text-text" aria-label="Close">
             <X size={13} />
           </button>
         </div>

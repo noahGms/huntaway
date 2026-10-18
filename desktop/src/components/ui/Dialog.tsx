@@ -31,7 +31,7 @@ export function Dialog({
               <RD.Title className="text-[16px] font-semibold">{title}</RD.Title>
               {description && <RD.Description className="mt-1 text-[12.5px] text-muted">{description}</RD.Description>}
             </div>
-            <RD.Close className="rounded-lg p-1 text-muted hover:bg-surface-high hover:text-text" aria-label="Fermer">
+            <RD.Close className="rounded-lg p-1 text-muted hover:bg-surface-high hover:text-text" aria-label="Close">
               <X size={16} />
             </RD.Close>
           </div>

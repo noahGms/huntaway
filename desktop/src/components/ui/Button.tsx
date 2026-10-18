@@ -1,16 +1,14 @@
 import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 
-type Variant = "primary" | "secondary" | "ghost" | "danger" | "attention";
+type Variant = "primary" | "secondary" | "ghost" | "danger";
 type Size = "sm" | "md";
 
 const variants: Record<Variant, string> = {
-  // Cream: primary actions (Nouvelle session, Envoyer).
+  // Cream: primary actions (New session, Send).
   primary: "bg-accent text-on-accent hover:bg-[#fff3e2] font-semibold",
   secondary: "bg-surface-high text-text border border-border hover:bg-[#262b33]",
   ghost: "text-muted hover:text-text hover:bg-surface-high",
   danger: "bg-surface-high text-error border border-border hover:bg-[#2a2023]",
-  // Tan: only for "an agent needs you".
-  attention: "bg-blocked text-ink hover:bg-[#eaa95f] font-semibold",
 };
 
 const sizes: Record<Size, string> = {
