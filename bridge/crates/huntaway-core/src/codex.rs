@@ -203,12 +203,12 @@ impl LineParser for Parser {
                 }
             }
             (Some("event_msg"), Some("task_complete")) => {
-                let mut items = Vec::new();
+                let mut items = self.end_turn(&timestamp);
                 // API errors (unsupported model, quota…) are only shown on screen.
                 if !self.answered && p["last_agent_message"].as_str().is_none_or(str::is_empty) {
                     items.push(TimelineItem::Notice {
                         timestamp: timestamp.clone(),
-                        text: "Codex n'a pas répondu (erreur ?) — voir le terminal".into(),
+                        text: "Codex did not answer (error?): see the terminal".into(),
                     });
                 }
                 self.answered = true;
@@ -228,7 +228,9 @@ impl LineParser for Parser {
                 Vec::new()
             }
             (Some("event_msg"), Some("turn_aborted")) => {
-                vec![TimelineItem::Notice { timestamp, text: "Interrompu par l'utilisateur".into() }]
+                let mut items = self.end_turn(&timestamp);
+                items.push(TimelineItem::Notice { timestamp, text: "Interrupted by the user".into() });
+                items
             }
             (Some("response_item"), Some("function_call" | "custom_tool_call")) => self.tool_call(p, uuid, timestamp),
             (Some("response_item"), Some("function_call_output" | "custom_tool_call_output")) => {
@@ -280,8 +282,25 @@ impl Parser {
             return Vec::new();
         }
         self.last_agent = text.clone();
+        // The user may send the same words again ("continue") once answered.
+        self.last_user.clear();
         self.answered = true;
         vec![TimelineItem::AssistantMessage { uuid, timestamp, text, sidechain: false }]
+    }
+
+    /// Turn finished or aborted: calls still without output never get one.
+    fn end_turn(&mut self, timestamp: &str) -> Vec<TimelineItem> {
+        self.last_user.clear();
+        std::mem::take(&mut self.pending)
+            .into_values()
+            .map(|t| TimelineItem::ToolResult {
+                timestamp: timestamp.to_string(),
+                tool_use_id: t.tool_use_id,
+                is_error: true,
+                rejected: false,
+                summary: "Interrupted".into(),
+            })
+            .collect()
     }
 
     fn tool_call(&mut self, p: &Value, uuid: String, timestamp: String) -> Vec<TimelineItem> {
@@ -451,10 +470,11 @@ mod tests {
         assert!(matches!(&items[3], TimelineItem::ToolCall { summary, .. } if summary == "ls -la"));
         assert!(matches!(&items[4], TimelineItem::ToolCall { kind: ToolKind::FileModified, summary, change: Some(_), .. } if summary == "src/app.ts"));
         assert!(matches!(&items[5], TimelineItem::AssistantMessage { text, .. } if text == "Corrigé."));
-        assert!(matches!(&items[6], TimelineItem::TurnEnded { duration_ms: Some(1200), .. }));
-        // c2 and c3 have no output yet.
-        let pending: Vec<&str> = p.pending().iter().map(|t| t.tool_use_id.as_str()).collect();
-        assert_eq!(pending, ["c2", "c3"]);
+        // c2 and c3 never got an output: closed by the turn end.
+        assert!(matches!(&items[6], TimelineItem::ToolResult { tool_use_id, is_error: true, .. } if tool_use_id == "c2"));
+        assert!(matches!(&items[7], TimelineItem::ToolResult { tool_use_id, .. } if tool_use_id == "c3"));
+        assert!(matches!(&items[8], TimelineItem::TurnEnded { duration_ms: Some(1200), .. }));
+        assert!(p.pending().is_empty());
     }
 
     #[test]
@@ -463,7 +483,7 @@ mod tests {
             r#"{"timestamp":"t1","type":"event_msg","payload":{"type":"user_message","message":"Salut"}}"#,
             r#"{"timestamp":"t2","type":"event_msg","payload":{"type":"task_complete","last_agent_message":null}}"#,
         ]);
-        assert!(matches!(&items[1], TimelineItem::Notice { text, .. } if text.contains("n'a pas répondu")));
+        assert!(matches!(&items[1], TimelineItem::Notice { text, .. } if text.contains("did not answer")));
         assert!(matches!(&items[2], TimelineItem::TurnEnded { .. }));
     }
 
@@ -509,6 +529,35 @@ mod tests {
             r#"{"timestamp":"t1","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"Salut"}]}}}"#,
         ]);
         assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn same_message_sent_again_after_an_answer_is_kept() {
+        let (_, items) = parse(&[
+            r#"{"timestamp":"t1","type":"event_msg","payload":{"type":"user_message","message":"continue"}}"#,
+            r#"{"timestamp":"t2","type":"event_msg","payload":{"type":"agent_message","message":"Done step 1."}}"#,
+            r#"{"timestamp":"t3","type":"event_msg","payload":{"type":"user_message","message":"continue"}}"#,
+            r#"{"timestamp":"t4","type":"event_msg","payload":{"type":"task_complete","last_agent_message":null}}"#,
+            r#"{"timestamp":"t5","type":"event_msg","payload":{"type":"user_message","message":"continue"}}"#,
+        ]);
+        let users = items.iter().filter(|i| matches!(i, TimelineItem::UserMessage { .. })).count();
+        assert_eq!(users, 3);
+    }
+
+    #[test]
+    fn aborted_turn_clears_pending_calls() {
+        let (p, items) = parse(&[
+            r#"{"timestamp":"t1","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"c1","arguments":"{\"cmd\":\"sleep 100\"}"}}"#,
+            r#"{"timestamp":"t2","type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted"}}"#,
+        ]);
+        assert!(p.pending().is_empty());
+        assert!(matches!(&items[1], TimelineItem::ToolResult { tool_use_id, is_error: true, .. } if tool_use_id == "c1"));
+        assert!(matches!(&items[2], TimelineItem::Notice { .. }));
+        let (p, _) = parse(&[
+            r#"{"timestamp":"t1","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"c1","arguments":"{}"}}"#,
+            r#"{"timestamp":"t2","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"ok"}}"#,
+        ]);
+        assert!(p.pending().is_empty());
     }
 
     #[test]
