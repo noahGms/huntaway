@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'keepalive.dart';
+import 'models.dart';
 import 'notifications.dart';
 import 'sync.dart';
 import 'ui/agent_screen.dart';
@@ -42,11 +43,10 @@ class _HuntawayAppState extends State<HuntawayApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _notifier.onOpen = _openAgent;
     _notifier.onEndpoint = _sendEndpoint;
+    _notifier.coveredByStream =
+        (machineId) => _foreground && widget.model.connection(machineId)?.status == ConnectionStatus.online;
     widget.model.addListener(_onModel);
-    // Live notifications from the WebSocket, except for the agent on screen.
-    widget.model.notifications.listen((n) {
-      if (openAgentKey != '${n.machineId}/${n.agentId}') _notifier.show(n);
-    });
+    widget.model.notifications.listen(_onNotification);
     _notifier.launchPayload().then((payload) {
       final parts = (payload ?? '').split('|');
       if (parts.length == 2) _openAgent(parts[0], parts[1]);
@@ -55,6 +55,19 @@ class _HuntawayAppState extends State<HuntawayApp> with WidgetsBindingObserver {
   }
 
   int _machineCount = 0;
+  DateTime? _pausedAt;
+
+  bool get _foreground => WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+
+  /// Live notifications from the WebSocket.
+  void _onNotification(AgentNotification n) {
+    // The agent on screen needs no alert, but only while the screen is
+    // actually visible (not in the background or behind the lock screen).
+    if (_foreground && openAgentKey == '${n.machineId}/${n.agentId}') return;
+    // Replayed after a reconnection: push already delivered it.
+    if (n.replayed && _notifier.endpoint != null) return;
+    _notifier.show(n);
+  }
 
   void _onModel() {
     // A newly paired machine needs the current push endpoint.
@@ -70,19 +83,30 @@ class _HuntawayAppState extends State<HuntawayApp> with WidgetsBindingObserver {
   }
 
   void _openAgent(String machineId, String agentId) {
-    navigatorKey.currentState?.push(MaterialPageRoute(
-      builder: (_) => AgentScreen(machineId: machineId, agentId: agentId),
-    ));
+    // A forgotten machine may still have a notification around.
+    if (widget.model.connection(machineId) == null) return;
+    if (openAgentKey == '$machineId/$agentId') return;
+    // Replace any agent screen already open instead of stacking them.
+    navigatorKey.currentState?.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => AgentScreen(machineId: machineId, agentId: agentId)),
+      (route) => route.isFirst,
+    );
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      widget.model.reconnectAll();
+      // After a while in the background the socket may have died silently
+      // (network change, sleep): don't trust it. A glance at the
+      // notification shade only reconnects what is offline.
+      final away = _pausedAt != null && DateTime.now().difference(_pausedAt!) > const Duration(seconds: 5);
+      _pausedAt = null;
+      widget.model.reconnectAll(force: away);
       BackgroundLink.instance.stop();
-    } else if (state == AppLifecycleState.paused && _notifier.distributor == null) {
+    } else if (state == AppLifecycleState.paused) {
+      _pausedAt ??= DateTime.now();
       // No push distributor: keep the WebSocket alive in the background.
-      BackgroundLink.instance.start();
+      if (_notifier.distributor == null) BackgroundLink.instance.start();
     }
   }
 

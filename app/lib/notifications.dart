@@ -26,6 +26,10 @@ class Notifier {
   /// Called when UnifiedPush gives us a new endpoint to send to the bridges.
   void Function(String? endpoint)? onEndpoint;
 
+  /// True when the app is on screen and the machine's live stream already
+  /// delivers its notifications: the push is then a duplicate.
+  bool Function(String machineId)? coveredByStream;
+
   String? endpoint;
   String? distributor;
 
@@ -155,12 +159,17 @@ class Notifier {
   Future<void> _onPush(Uint8List content) async {
     try {
       final j = jsonDecode(utf8.decode(content)) as Map<String, dynamic>;
+      final machineId = j['machine_id'] as String? ?? '';
+      if (coveredByStream?.call(machineId) == true) return;
+      final kind = j['kind'] as String? ?? '';
+      final title = j['title'] as String? ?? '';
       await show(AgentNotification(
-        j['machine_id'] as String? ?? '',
+        machineId,
         j['agent_id'] as String? ?? '',
-        j['kind'] as String? ?? '',
-        j['title'] as String? ?? 'Huntaway',
+        kind,
+        title.isEmpty ? AgentNotification.defaultTitle(kind) : title,
         j['body'] as String? ?? '',
+        interactionId: j['interaction_id'] as String?,
       ));
     } catch (_) {
       // Not a Huntaway payload: ignore.
