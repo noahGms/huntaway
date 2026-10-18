@@ -8,4 +8,4 @@ rm -rf "$out"
 (cd ../bridge && TS_RS_EXPORT_DIR="$out" cargo test -q -p huntaway-api --features ts export_bindings >/dev/null)
 find "$out" -name '*.ts' -exec sed -i.bak 's/bigint/number/g' {} \;
 find "$out" -name '*.bak' -delete
-echo "types générés dans src/api/generated/"
+echo "types generated in src/api/generated/"
