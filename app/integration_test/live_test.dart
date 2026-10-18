@@ -78,7 +78,7 @@ Future<void> waitFor(WidgetTester tester, Finder finder, {Duration timeout = con
     await Future<void>.delayed(const Duration(milliseconds: 300));
   }
   await shot(tester, 'echec');
-  throw TestFailure('Introuvable après $timeout : $finder');
+  throw TestFailure('Not found after $timeout: $finder');
 }
 
 void main() {
@@ -93,16 +93,16 @@ void main() {
     await shot(tester, '01-accueil');
 
     // Pairing through the manual entry dialog.
-    await tester.tap(find.text('Ajouter une machine'));
-    await waitFor(tester, find.text('Saisie manuelle'));
+    await tester.tap(find.text('Add a machine'));
+    await waitFor(tester, find.text('Enter manually'));
     await tester.pump(const Duration(seconds: 2));
     await shot(tester, '01b-appairage');
-    await tester.tap(find.text('Saisie manuelle'));
+    await tester.tap(find.text('Enter manually'));
     await tester.pump(const Duration(seconds: 1));
     await shot(tester, '01c-apres-tap');
     await waitFor(tester, find.byType(AlertDialog));
     await tester.enterText(find.descendant(of: find.byType(AlertDialog), matching: find.byType(TextField)), pairing);
-    await tester.tap(find.text('Appairer'));
+    await tester.tap(find.text('Pair'));
 
     // Inbox with the test agent.
     await waitFor(tester, find.textContaining(project));
@@ -118,7 +118,7 @@ void main() {
 
     // Send a message that requires an approval.
     await tester.enterText(find.byType(TextField),
-        'Crée le fichier $marker.txt avec exactement la commande Bash: echo $marker > $marker.txt');
+        'Create the file $marker.txt with exactly this Bash command: echo $marker > $marker.txt');
     await tester.pump(const Duration(milliseconds: 500));
     final send = find.ancestor(of: find.byIcon(Icons.arrow_upward_rounded), matching: find.byType(IconButton));
     for (var i = 0; i < 5; i++) {
@@ -129,19 +129,17 @@ void main() {
       final field = tester.widget<TextField>(find.byType(TextField));
       if (field.controller!.text.isEmpty) break; // sent
     }
-    await waitFor(tester, find.text('Approuver'), timeout: const Duration(seconds: 60));
+    await waitFor(tester, find.text('Approve'), timeout: const Duration(seconds: 60));
     await tester.pump(const Duration(seconds: 1));
-    await shot(tester, '04-approbation');
+    await shot(tester, '04-approval');
 
-    await tester.tap(find.text('Approuver'));
+    await tester.tap(find.text('Approve'));
     await waitFor(tester, find.textContaining('$marker.txt').at(1), timeout: const Duration(seconds: 60));
     await tester.pump(const Duration(seconds: 4));
-    await shot(tester, '05-apres-approbation');
+    await shot(tester, '05-after-approval');
 
     // Terminal view (colored screen through xterm).
-    await tester.tap(find.byType(PopupMenuButton<String>));
-    await waitFor(tester, find.text('Voir le terminal'));
-    await tester.tap(find.text('Voir le terminal'));
+    await tester.tap(find.byIcon(Icons.terminal_rounded));
     await tester.pump(const Duration(seconds: 4));
     await shot(tester, '05b-terminal');
     await tester.pageBack();
@@ -152,19 +150,19 @@ void main() {
       await tester.pageBack();
       await waitFor(tester, find.text('Huntaway'));
       await Process.run('pkill', ['-f', 'huntawayd run']);
-      await waitFor(tester, find.textContaining('Hors ligne'), timeout: const Duration(seconds: 30));
-      await shot(tester, '06-hors-ligne');
+      await waitFor(tester, find.textContaining('Offline'), timeout: const Duration(seconds: 30));
+      await shot(tester, '06-offline');
       await Process.start(huntawayd, ['run'],
           environment: {'HUNTAWAY_HOME': huntawayHome}, mode: ProcessStartMode.detached);
       // New epoch: the app must reconnect and reload by itself.
       final end = DateTime.now().add(const Duration(seconds: 60));
-      while (find.textContaining('Hors ligne').evaluate().isNotEmpty && DateTime.now().isBefore(end)) {
+      while (find.textContaining('Offline').evaluate().isNotEmpty && DateTime.now().isBefore(end)) {
         await tester.pump(const Duration(milliseconds: 300));
         await Future<void>.delayed(const Duration(milliseconds: 500));
       }
-      expect(find.textContaining('Hors ligne'), findsNothing);
+      expect(find.textContaining('Offline'), findsNothing);
       await waitFor(tester, find.textContaining(project));
-      await shot(tester, '07-reconnecte');
+      await shot(tester, '07-reconnected');
     }
 
     for (final c in [...model.connections]) {

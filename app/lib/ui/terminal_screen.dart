@@ -78,16 +78,16 @@ class _TerminalScreenState extends State<TerminalScreen> {
         title: Text('Terminal · ${widget.agent.displayName}'),
         actions: [
           IconButton(
-            tooltip: _paused ? 'Reprendre' : 'Pause',
+            tooltip: _paused ? 'Resume' : 'Pause',
             icon: Icon(_paused ? Icons.play_arrow : Icons.pause),
             onPressed: () => setState(() => _paused = !_paused),
           ),
           IconButton(
-            tooltip: 'Copier',
+            tooltip: 'Copy',
             icon: const Icon(Icons.copy),
             onPressed: () {
               Clipboard.setData(ClipboardData(text: _text));
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copié')));
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied')));
             },
           ),
         ],
@@ -115,7 +115,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
 
   /// Advanced raw input (PRD §14): text and keys sent as is to the pane.
   Widget _rawInput() {
-    const keys = {'Entrée': 'enter', 'Échap': 'esc', '↑': 'up', '↓': 'down', 'Tab': 'tab', 'Ctrl+C': 'ctrl+c'};
+    const keys = {'Enter': 'enter', 'Esc': 'esc', '↑': 'up', '↓': 'down', 'Tab': 'tab', 'Ctrl+C': 'ctrl+c'};
     return SafeArea(
       top: false,
       child: Container(
@@ -137,7 +137,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
               child: TextField(
                 controller: _input,
                 style: const TextStyle(fontFamily: monoFont),
-                decoration: const InputDecoration(hintText: 'Saisie brute (texte + Entrée)'),
+                decoration: const InputDecoration(hintText: 'Raw input (text + Enter)'),
                 onSubmitted: (t) {
                   _send(text: t, keys: ['enter']);
                   _input.clear();
@@ -146,7 +146,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
             ),
             IconButton(
               icon: const Icon(Icons.keyboard_return),
-              tooltip: 'Envoyer avec Entrée',
+              tooltip: 'Send with Enter',
               onPressed: () {
                 _send(text: _input.text, keys: ['enter']);
                 _input.clear();

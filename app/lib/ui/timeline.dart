@@ -21,7 +21,7 @@ class ActivityEntry extends Entry {
   List<TimelineItem> get calls =>
       items.where((i) => i.type == 'tool_call').toList();
 
-  /// "3 lectures · 2 modifs · npm test" style summary.
+  /// "3 reads · 2 edits · npm test" style summary.
   String get summary {
     final calls = this.calls;
     int count(String kind) => calls.where((c) => c.kind == kind).length;
@@ -31,28 +31,28 @@ class ActivityEntry extends Entry {
       if (n > 1) parts.add('$n $many');
     }
 
-    add(count('file_read'), '1 lecture', 'lectures');
-    add(count('search'), '1 recherche', 'recherches');
-    add(count('file_modified'), '1 modif', 'modifs');
+    add(count('file_read'), '1 read', 'reads');
+    add(count('search'), '1 search', 'searches');
+    add(count('file_modified'), '1 edit', 'edits');
     final commands = calls.where((c) => c.kind == 'command').toList();
     if (commands.length == 1) {
       parts.add(commands.first.summary);
     } else {
-      add(commands.length, '', 'commandes');
+      add(commands.length, '', 'commands');
     }
-    add(count('web'), '1 recherche web', 'recherches web');
-    add(count('subagent'), '1 sous-agent', 'sous-agents');
+    add(count('web'), '1 web search', 'web searches');
+    add(count('subagent'), '1 subagent', 'subagents');
     add(count('plan'), 'plan', 'plans');
-    add(count('other'), '1 outil', 'outils');
+    add(count('other'), '1 tool', 'tools');
     final todos = items.where((i) => i.type == 'todos_updated').toList();
     if (todos.isNotEmpty) {
       final list = (todos.last.data['todos'] as List?) ?? const [];
       final done = list
           .where((t) => (t as Map)['status'] == 'completed')
           .length;
-      parts.add('tâches $done/${list.length}');
+      parts.add('tasks $done/${list.length}');
     }
-    return parts.isEmpty ? 'Activité' : parts.join(' · ');
+    return parts.isEmpty ? 'Activity' : parts.join(' · ');
   }
 
   int get errors => items
@@ -123,7 +123,7 @@ class MessageBubble extends StatelessWidget {
   void _copy(BuildContext context) {
     Clipboard.setData(ClipboardData(text: item.text));
     HapticFeedback.selectionClick();
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Message copié')));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Message copied')));
   }
 
   @override
@@ -224,12 +224,12 @@ IconData _toolIcon(String kind) => switch (kind) {
 };
 
 String _toolVerb(TimelineItem call) => switch (call.kind) {
-  'file_read' => 'Lu',
-  'search' => 'Cherché',
-  'file_modified' => 'Modifié',
-  'command' => 'Exécuté',
+  'file_read' => 'Read',
+  'search' => 'Searched',
+  'file_modified' => 'Edited',
+  'command' => 'Ran',
   'web' => 'Web',
-  'subagent' => 'Sous-agent',
+  'subagent' => 'Subagent',
   'plan' => 'Plan',
   _ => call.name,
 };
@@ -282,7 +282,7 @@ class _ActivityTileState extends State<ActivityTile> {
                       ),
                     ),
                   ),
-                  if (e.rejected > 0) _pill('refusé', HuntawayColors.blocked),
+                  if (e.rejected > 0) _pill('denied', HuntawayColors.blocked),
                   if (e.errors > 0) _pill('${e.errors} ✗', HuntawayColors.error),
                   Icon(
                     open ? Icons.expand_less : Icons.expand_more,
@@ -343,7 +343,7 @@ class _ActivityTileState extends State<ActivityTile> {
                                       case final r?)
                                     if (r.rejected || r.isError)
                                       Text(
-                                        r.rejected ? 'Refusé' : r.summary,
+                                        r.rejected ? 'Denied' : r.summary,
                                         style: TextStyle(
                                           fontSize: 12,
                                           color: r.rejected
@@ -425,7 +425,7 @@ class NoticeTile extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Résumé',
+              'Summary',
               style: TextStyle(
                 color: HuntawayColors.muted,
                 fontSize: 12,
@@ -502,7 +502,7 @@ void showDiff(BuildContext context, Map<String, dynamic> change) {
                   ),
                 ),
                 Text(
-                  old == null ? 'Fichier écrit' : 'Modification',
+                  old == null ? 'File written' : 'Edit',
                   style: const TextStyle(
                     color: HuntawayColors.muted,
                     fontSize: 12,
@@ -538,7 +538,7 @@ void showDiff(BuildContext context, Map<String, dynamic> change) {
                   const Padding(
                     padding: EdgeInsets.all(12),
                     child: Text(
-                      'Aperçu tronqué',
+                      'Preview truncated',
                       style: TextStyle(color: HuntawayColors.muted, fontSize: 12),
                     ),
                   ),

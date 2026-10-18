@@ -281,16 +281,16 @@ String agentTitle(Agent a) {
   final i = a.interaction;
   if (i != null && i.questions.isNotEmpty) return i.questions.first.question;
   if (a.summary.isNotEmpty) return a.summary;
-  return '${a.displayName} · aucune tâche';
+  return '${a.displayName} · no task';
 }
 
-/// "Claude · apii · onglet 2 · MacBook Air"
+/// "Claude · apii · tab 2 · MacBook Air"
 String agentSubtitle(Agent a, {String? machine, bool withKind = true}) {
   final tab = a.tabLabel;
   return [
     if (withKind) a.displayName,
     a.workspaceLabel?.isNotEmpty == true ? a.workspaceLabel! : a.project,
-    if (tab != null && tab.isNotEmpty) int.tryParse(tab) != null ? 'onglet $tab' : tab,
+    if (tab != null && tab.isNotEmpty) int.tryParse(tab) != null ? 'tab $tab' : tab,
     ?machine,
   ].join(' · ');
 }
@@ -359,10 +359,16 @@ class _LogoPainter extends CustomPainter {
 String relativeTime(DateTime? t) {
   if (t == null) return '';
   final d = DateTime.now().difference(t);
-  if (d.inSeconds < 60) return "à l'instant";
-  if (d.inMinutes < 60) return '${d.inMinutes} min';
-  if (d.inHours < 24) return '${d.inHours} h';
-  return '${d.inDays} j';
+  if (d.inSeconds < 60) return 'just now';
+  if (d.inMinutes < 60) return '${d.inMinutes}m';
+  if (d.inHours < 24) return '${d.inHours}h';
+  return '${d.inDays}d';
+}
+
+/// "just now", "4m ago"…
+String relativeAgo(DateTime? t) {
+  final r = relativeTime(t);
+  return r.isEmpty || r == 'just now' ? r : '$r ago';
 }
 
 String clock(DateTime? t) {
@@ -392,7 +398,7 @@ class OfflineBanner extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
       ),
       child: Text(
-        'Hors ligne : $names${since != null ? ' · dernier état il y a ${relativeTime(since)}' : ''}',
+        'Offline: $names${since != null ? ' · last update ${relativeAgo(since)}' : ''}',
         style: const TextStyle(color: HuntawayColors.error, fontSize: 13),
       ),
     );

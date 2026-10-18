@@ -31,18 +31,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Statistiques · ${c.machine.name}'),
+        title: Text('Stats · ${c.machine.name}'),
         content: error != null
             ? Text(error.toString())
             : Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('Depuis ${((m!['uptime_secs'] as num) / 3600).toStringAsFixed(1)} h', style: const TextStyle(color: HuntawayColors.muted)),
+                Text('Up ${((m!['uptime_secs'] as num) / 3600).toStringAsFixed(1)} h', style: const TextStyle(color: HuntawayColors.muted)),
                 const SizedBox(height: 10),
-                Text('Blocages : ${m['blocked_episodes']}'),
-                Text('Débloqués depuis Huntaway : ${m['resolved_from_huntaway']}${rate != null ? ' (${(rate * 100).round()} %)' : ''}'),
-                Text('Délai médian de déblocage : ${secs((m['time_to_unblock_secs'] as Map)['median'])}'),
-                Text('Depuis Huntaway : ${secs((m['time_to_unblock_from_huntaway_secs'] as Map)['median'])}'),
+                Text('Blocks: ${m['blocked_episodes']}'),
+                Text('Unblocked from Huntaway: ${m['resolved_from_huntaway']}${rate != null ? ' (${(rate * 100).round()}%)' : ''}'),
+                Text('Median time to unblock: ${secs((m['time_to_unblock_secs'] as Map)['median'])}'),
+                Text('From Huntaway: ${secs((m['time_to_unblock_from_huntaway_secs'] as Map)['median'])}'),
                 const SizedBox(height: 10),
-                Text('Notifications : ${notifs.entries.map((e) => '${e.key} ${e.value}').join(' · ')}'),
+                Text('Notifications: ${notifs.entries.map((e) => '${e.key} ${e.value}').join(' · ')}'),
               ]),
         actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK'))],
       ),
@@ -56,10 +56,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       showDialog(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('Aucun distributeur'),
+          title: const Text('No distributor'),
           content: const Text(
-            'Les notifications quand Huntaway est fermée passent par UnifiedPush. '
-            "Installe l'app ntfy (F-Droid ou Play Store), puis reviens ici.",
+            'Notifications while Huntaway is closed go through UnifiedPush. '
+            'Install the ntfy app (F-Droid or Play Store), then come back here.',
           ),
           actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK'))],
         ),
@@ -71,7 +71,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         : await showDialog<String>(
             context: context,
             builder: (context) => SimpleDialog(
-              title: const Text('Distributeur'),
+              title: const Text('Distributor'),
               children: [
                 for (final d in distributors)
                   SimpleDialogOption(onPressed: () => Navigator.pop(context, d), child: Text(d)),
@@ -87,7 +87,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     final model = AppScope.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Réglages')),
+      appBar: AppBar(title: const Text('Settings')),
       body: ListView(children: [
         const _Header('Machines'),
         for (final c in model.connections)
@@ -98,9 +98,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: Text(
               [
                 switch (c.status) {
-                  ConnectionStatus.online => 'en ligne',
-                  ConnectionStatus.connecting => 'connexion…',
-                  ConnectionStatus.offline => 'hors ligne${c.lastError != null ? ' · ${c.lastError}' : ''}',
+                  ConnectionStatus.online => 'online',
+                  ConnectionStatus.connecting => 'connecting…',
+                  ConnectionStatus.offline => 'offline${c.lastError != null ? ' · ${c.lastError}' : ''}',
                 },
                 c.client.address ?? c.machine.addresses.first,
               ].join(' · '),
@@ -109,17 +109,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: () => _showMetrics(c),
             trailing: IconButton(
               icon: const Icon(Icons.delete_outline),
-              tooltip: 'Oublier cette machine',
+              tooltip: 'Forget this machine',
               onPressed: () async {
                 final ok = await showDialog<bool>(
                   context: context,
                   builder: (context) => AlertDialog(
-                    title: Text('Oublier ${c.machine.name} ?'),
+                    title: Text('Forget ${c.machine.name}?'),
                     content: const Text(
-                        'Le téléphone supprime ses accès. Pour révoquer le token côté machine : `huntawayd devices revoke`.'),
+                        'This phone deletes its credentials. To revoke the token on the machine: `huntawayd devices revoke`.'),
                     actions: [
-                      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Annuler')),
-                      FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Oublier')),
+                      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                      FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Forget')),
                     ],
                   ),
                 );
@@ -129,18 +129,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ListTile(
           leading: const Icon(Icons.add),
-          title: const Text('Ajouter une machine'),
+          title: const Text('Add a machine'),
           onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PairingScreen())),
         ),
         const _Header('Notifications'),
         if (_notifier.pushSupported)
           ListTile(
             leading: const Icon(Icons.notifications_active_outlined),
-            title: const Text('Notifications app fermée'),
+            title: const Text('Notifications when closed'),
             subtitle: Text(
               _notifier.distributor == null
-                  ? 'Désactivées : choisis un distributeur UnifiedPush (ntfy)'
-                  : 'Via ${_notifier.distributor}${_notifier.endpoint == null ? ' · en attente' : ' · actives'}',
+                  ? 'Off: pick a UnifiedPush distributor (ntfy)'
+                  : 'Via ${_notifier.distributor}${_notifier.endpoint == null ? ' · pending' : ' · active'}',
               style: const TextStyle(color: HuntawayColors.muted, fontSize: 12.5),
             ),
             trailing: _notifier.distributor == null
@@ -150,23 +150,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       await _notifier.disablePush();
                       if (mounted) setState(() {});
                     },
-                    child: const Text('Couper'),
+                    child: const Text('Turn off'),
                   ),
             onTap: _choosePush,
           )
         else
           const ListTile(
             leading: Icon(Icons.notifications_outlined),
-            title: Text('Notifications quand l’app est ouverte'),
-            subtitle: Text('Le push app fermée sur iOS arrivera avec le relais Huntaway.',
+            title: Text('Notifications while the app is open'),
+            subtitle: Text('Push while closed on iOS will come with the Huntaway relay.',
                 style: TextStyle(color: HuntawayColors.muted, fontSize: 12.5)),
           ),
         if (BackgroundLink.instance.supported && _notifier.distributor == null)
           SwitchListTile(
             secondary: const Icon(Icons.sync),
-            title: const Text('Maintenir la connexion en arrière-plan'),
+            title: const Text('Stay connected in the background'),
             subtitle: const Text(
-                'Sans ntfy : une notification permanente garde Huntaway connecté (consomme un peu de batterie)',
+                'Without ntfy: a persistent notification keeps Huntaway connected (uses a little battery)',
                 style: TextStyle(color: HuntawayColors.muted, fontSize: 12.5)),
             value: BackgroundLink.instance.enabled,
             onChanged: (v) async {
@@ -176,8 +176,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         SwitchListTile(
           secondary: const Icon(Icons.lock_outline),
-          title: const Text("Masquer le contenu sur l'écran verrouillé"),
-          subtitle: const Text('Affiche seulement « Huntaway » tant que le téléphone est verrouillé',
+          title: const Text('Hide content on the lock screen'),
+          subtitle: const Text('Shows only "Huntaway" while the phone is locked',
               style: TextStyle(color: HuntawayColors.muted, fontSize: 12.5)),
           value: _notifier.hideOnLockScreen,
           onChanged: (v) async {
@@ -185,11 +185,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             if (mounted) setState(() {});
           },
         ),
-        const _Header('À propos'),
+        const _Header('About'),
         const ListTile(
           leading: HuntawayLogo(size: 36),
           title: Text('Huntaway 0.1'),
-          subtitle: Text('Pilote tes agents Herdr depuis ton téléphone.',
+          subtitle: Text('Drive your Herdr agents from your phone.',
               style: TextStyle(color: HuntawayColors.muted, fontSize: 12.5)),
         ),
       ]),

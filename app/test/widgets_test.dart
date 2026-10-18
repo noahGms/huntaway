@@ -59,11 +59,11 @@ TimelineItem item(int n, String type, [Map<String, dynamic> extra = const {}]) =
     ..loaded = true
     ..hasMore = false;
   t.merge([
-    item(0, 'user_message', {'text': "Refactor l'authentification et ajoute les tests."}),
+    item(0, 'user_message', {'text': 'Refactor authentication and add tests.'}),
     item(1, 'assistant_message', {
-      'text': 'Je vais commencer par examiner le système de sessions actuel :\n\n'
-          '- les jetons sont lus dans `localStorage`\n'
-          '- **aucun test** ne couvre le renouvellement',
+      'text': 'I will start by looking at the current session system:\n\n'
+          '- tokens are read from `localStorage`\n'
+          '- **no test** covers renewal',
     }),
     item(2, 'tool_call', {'kind': 'file_read', 'summary': 'src/auth/session.ts', 'tool_use_id': 'a'}),
     item(3, 'tool_call', {
@@ -85,14 +85,14 @@ void main() {
   testWidgets('Inbox puts blocked agents first with their pending command', (tester) async {
     final (model, _) = fixture();
     await tester.pumpWidget(host(model, const InboxScreen()));
-    expect(find.text('BESOIN DE TOI'), findsOneWidget);
-    expect(find.text('EN COURS'), findsOneWidget);
-    expect(find.text('TERMINÉ'), findsOneWidget);
-    expect(find.text('Veut utiliser Bash'), findsOneWidget);
+    expect(find.text('NEEDS YOU'), findsOneWidget);
+    expect(find.text('WORKING'), findsOneWidget);
+    expect(find.text('DONE'), findsOneWidget);
+    expect(find.text('Wants to use Bash'), findsOneWidget);
     expect(find.text('npm run migrate'), findsOneWidget);
-    expect(find.text('Approuver'), findsOneWidget);
-    final blockedY = tester.getTopLeft(find.text('BESOIN DE TOI')).dy;
-    final doneY = tester.getTopLeft(find.text('TERMINÉ')).dy;
+    expect(find.text('Approve'), findsOneWidget);
+    final blockedY = tester.getTopLeft(find.text('NEEDS YOU')).dy;
+    final doneY = tester.getTopLeft(find.text('DONE')).dy;
     expect(blockedY, lessThan(doneY));
   });
 
@@ -100,19 +100,19 @@ void main() {
     final (model, _) = fixture();
     await tester.pumpWidget(host(model, const AgentScreen(machineId: 'm1', agentId: 'default:w1:p1')));
     await tester.pump();
-    expect(find.text("Refactor l'authentification et ajoute les tests."), findsOneWidget);
-    expect(find.text('1 lecture · 1 modif · npm run migrate'), findsOneWidget);
-    expect(find.text('Claude demande une autorisation'), findsOneWidget);
-    expect(find.text('Approuver'), findsOneWidget);
-    expect(find.text('Refuser'), findsOneWidget);
+    expect(find.text('Refactor authentication and add tests.'), findsOneWidget);
+    expect(find.text('1 read · 1 edit · npm run migrate'), findsOneWidget);
+    expect(find.text('Claude asks for permission'), findsOneWidget);
+    expect(find.text('Approve'), findsOneWidget);
+    expect(find.text('Deny'), findsOneWidget);
     expect(find.text("Yes, and don't ask again for npm"), findsOneWidget);
-    expect(find.widgetWithText(TextField, 'Refuser et expliquer…'), findsOneWidget);
+    expect(find.widgetWithText(TextField, 'Deny and explain…'), findsOneWidget);
     // Expanding the activity lists each tool call.
-    await tester.tap(find.text('1 lecture · 1 modif · npm run migrate'));
+    await tester.tap(find.text('1 read · 1 edit · npm run migrate'));
     await tester.pump();
-    expect(find.text('Modifié'), findsOneWidget);
+    expect(find.text('Edited'), findsOneWidget);
     // Tapping the modified file opens its diff.
-    await tester.tap(find.text('Modifié'));
+    await tester.tap(find.text('Edited'));
     await tester.pump(const Duration(milliseconds: 600)); // status dots pulse forever
     expect(find.text('session.ts'), findsOneWidget);
     expect(find.text('- const token = localStorage.get()'), findsOneWidget);
@@ -127,7 +127,7 @@ void main() {
       ..merge([item(0, 'tool_call', {'kind': 'command', 'summary': 'npm test', 'tool_use_id': 'x'})]);
     await tester.pumpWidget(host(model, const AgentScreen(machineId: 'm1', agentId: 'default:w2:p1')));
     await tester.pump();
-    expect(find.text('Exécute npm test…'), findsOneWidget);
+    expect(find.text('Running npm test…'), findsOneWidget);
     expect(find.byIcon(Icons.stop_rounded), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
@@ -139,10 +139,10 @@ void main() {
     await tester.pump();
     await tester.enterText(find.byType(TextField), 'offline');
     await tester.pump();
-    expect(find.text('EN COURS'), findsOneWidget);
-    expect(find.text('BESOIN DE TOI'), findsNothing);
+    expect(find.text('WORKING'), findsOneWidget);
+    expect(find.text('NEEDS YOU'), findsNothing);
     await tester.enterText(find.byType(TextField), 'zzz');
     await tester.pump();
-    expect(find.textContaining('Aucun agent ne correspond'), findsOneWidget);
+    expect(find.textContaining('No agent matches'), findsOneWidget);
   });
 }

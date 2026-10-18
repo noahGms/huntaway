@@ -36,16 +36,16 @@ class _PairingScreenState extends State<PairingScreen> {
     if (_busy) return;
     setState(() {
       _busy = true;
-      _status = 'Connexion à la machine…';
+      _status = 'Connecting to the machine…';
     });
     try {
       final payload = PairingPayload.parse(raw);
-      setState(() => _status = 'Appairage avec ${payload.machineName}…');
+      setState(() => _status = 'Pairing with ${payload.machineName}…');
       final machine = await pair(payload, _deviceName);
       if (!mounted) return;
       await AppScope.of(context).addMachine(machine);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${machine.name} ajoutée')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${machine.name} added')));
       Navigator.of(context).pop(true);
     } catch (e) {
       if (!mounted) return;
@@ -62,15 +62,15 @@ class _PairingScreenState extends State<PairingScreen> {
     final raw = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Saisie manuelle'),
+        title: const Text('Enter manually'),
         content: TextField(
           controller: controller,
           maxLines: 5,
-          decoration: const InputDecoration(hintText: 'Colle le JSON affiché par `huntawayd pair`'),
+          decoration: const InputDecoration(hintText: 'Paste the JSON printed by `huntawayd pair`'),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Annuler')),
-          FilledButton(onPressed: () => Navigator.pop(context, controller.text), child: const Text('Appairer')),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, controller.text), child: const Text('Pair')),
         ],
       ),
     );
@@ -80,13 +80,13 @@ class _PairingScreenState extends State<PairingScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Ajouter une machine')),
+      appBar: AppBar(title: const Text('Add a machine')),
       body: Column(children: [
         const Padding(
           padding: EdgeInsets.fromLTRB(20, 4, 20, 12),
           child: Text(
-            'Sur la machine, lance `huntawayd pair` puis scanne le QR code. '
-            'Le téléphone doit pouvoir joindre la machine (Tailscale ou réseau local).',
+            'On the machine, run `huntawayd pair`, then scan the QR code. '
+            'The phone must be able to reach the machine (Tailscale or local network).',
             style: TextStyle(color: HuntawayColors.muted),
           ),
         ),
@@ -107,7 +107,7 @@ class _PairingScreenState extends State<PairingScreen> {
                     alignment: Alignment.center,
                     padding: const EdgeInsets.all(24),
                     child: const Text(
-                      'Caméra indisponible. Utilise la saisie manuelle.',
+                      'Camera unavailable. Enter the code manually.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: HuntawayColors.muted),
                     ),
@@ -134,7 +134,7 @@ class _PairingScreenState extends State<PairingScreen> {
             child: OutlinedButton.icon(
               onPressed: _busy ? null : _paste,
               icon: const Icon(Icons.content_paste),
-              label: const Text('Saisie manuelle'),
+              label: const Text('Enter manually'),
             ),
           ),
         ),

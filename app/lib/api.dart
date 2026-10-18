@@ -31,7 +31,7 @@ Never _throwFrom(http.Response r) {
   } on BridgeException {
     rethrow;
   } catch (_) {
-    throw BridgeException('http_${r.statusCode}', 'Erreur ${r.statusCode}', r.statusCode);
+    throw BridgeException('http_${r.statusCode}', 'Error ${r.statusCode}', r.statusCode);
   }
 }
 
@@ -64,7 +64,7 @@ class BridgeClient {
       } catch (_) {}
     }
     _address = null;
-    throw BridgeException('unreachable', 'Machine injoignable');
+    throw BridgeException('unreachable', 'Machine unreachable');
   }
 
   Future<dynamic> _send(String method, String path,
@@ -81,10 +81,10 @@ class BridgeClient {
       };
     } on TimeoutException {
       _address = null;
-      throw BridgeException('timeout', 'La machine ne répond pas');
+      throw BridgeException('timeout', 'The machine is not responding');
     } catch (e) {
       _address = null;
-      throw BridgeException('network', 'Connexion impossible');
+      throw BridgeException('network', 'Cannot connect');
     }
     if (r.statusCode >= 400) _throwFrom(r);
     return jsonDecode(utf8.decode(r.bodyBytes));
@@ -168,10 +168,10 @@ class PairingPayload {
     try {
       j = (jsonDecode(raw.trim()) as Map).cast<String, dynamic>();
     } catch (_) {
-      throw BridgeException('invalid_qr', "Ce n'est pas un QR code Huntaway");
+      throw BridgeException('invalid_qr', 'Not a Huntaway QR code');
     }
     if (j['v'] != 1 || j['pairing_code'] == null) {
-      throw BridgeException('invalid_qr', "Ce n'est pas un QR code Huntaway compatible");
+      throw BridgeException('invalid_qr', 'Unsupported Huntaway QR code');
     }
     return PairingPayload(
       j['machine_id'] as String,
@@ -201,7 +201,7 @@ Future<PairedMachine> pair(PairingPayload payload, String deviceName, {http.Clie
               body: jsonEncode({'code': payload.code, 'device_name': deviceName, 'nonce': nonce}))
           .timeout(const Duration(seconds: 6));
     } catch (_) {
-      lastError = BridgeException('unreachable', 'Injoignable : $address');
+      lastError = BridgeException('unreachable', 'Unreachable: $address');
       continue;
     }
     if (r.statusCode >= 400) _throwFrom(r);
@@ -210,7 +210,7 @@ Future<PairedMachine> pair(PairingPayload payload, String deviceName, {http.Clie
     final publicKey = base64.decode(j['public_key'] as String);
     final digest = await Sha256().hash(publicKey);
     if ('sha256:${_b64url(digest.bytes)}' != payload.fingerprint) {
-      throw BridgeException('fingerprint_mismatch', "L'empreinte de la machine ne correspond pas au QR code");
+      throw BridgeException('fingerprint_mismatch', 'The machine fingerprint does not match the QR code');
     }
     final message = utf8.encode('huntaway-pair-v1|$nonce|${j['machine_id']}|${j['device_id']}');
     final valid = await Ed25519().verify(
@@ -221,7 +221,7 @@ Future<PairedMachine> pair(PairingPayload payload, String deviceName, {http.Clie
       ),
     );
     if (!valid || j['machine_id'] != payload.machineId) {
-      throw BridgeException('bad_signature', 'Signature de la machine invalide');
+      throw BridgeException('bad_signature', 'Invalid machine signature');
     }
     // Put the address that worked first.
     final addresses = [address, ...payload.addresses.where((a) => a != address)];
@@ -235,5 +235,5 @@ Future<PairedMachine> pair(PairingPayload payload, String deviceName, {http.Clie
       permissions: ((j['permissions'] as List?) ?? const []).cast<String>(),
     );
   }
-  throw lastError ?? BridgeException('unreachable', 'Aucune adresse joignable');
+  throw lastError ?? BridgeException('unreachable', 'No reachable address');
 }

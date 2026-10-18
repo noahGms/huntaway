@@ -79,16 +79,16 @@ class Attention {
 
   String get label => switch (status) {
         AttentionStatus.blocked => switch (reason) {
-            'approval' => 'Approbation',
+            'approval' => 'Approval',
             'question' => 'Question',
-            'plan' => 'Plan à valider',
+            'plan' => 'Plan to review',
             'explicit_question' => 'Question',
-            _ => 'En attente',
+            _ => 'Waiting',
           },
-        AttentionStatus.working => 'En cours',
-        AttentionStatus.done => 'Terminé',
-        AttentionStatus.idle => 'Inactif',
-        AttentionStatus.unknown => 'Inconnu',
+        AttentionStatus.working => 'Working',
+        AttentionStatus.done => 'Done',
+        AttentionStatus.idle => 'Idle',
+        AttentionStatus.unknown => 'Unknown',
       };
 }
 

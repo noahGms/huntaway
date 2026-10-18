@@ -103,7 +103,7 @@ class _AgentScreenState extends State<AgentScreen> {
         body: Center(
           child: waiting
               ? const CircularProgressIndicator()
-              : const Text("Cet agent n'existe plus", style: TextStyle(color: HuntawayColors.muted)),
+              : const Text('This agent no longer exists', style: TextStyle(color: HuntawayColors.muted)),
         ),
       );
     }
@@ -154,7 +154,7 @@ class _AgentScreenState extends State<AgentScreen> {
                 if (v == 'stop') _run(() => c.client.interrupt(agent.id));
               },
               itemBuilder: (_) => [
-                const PopupMenuItem(value: 'stop', child: Text('Interrompre (Échap)')),
+                const PopupMenuItem(value: 'stop', child: Text('Interrupt (Esc)')),
               ],
             ),
         ],
@@ -169,8 +169,8 @@ class _AgentScreenState extends State<AgentScreen> {
             decoration: BoxDecoration(color: HuntawayColors.surface, borderRadius: BorderRadius.circular(12)),
             child: Text(
               agent.warnings.contains('missing_herdr_integration')
-                  ? "Conversation indisponible : lance `herdr integration install claude` sur la machine puis redémarre l'agent. Le terminal reste accessible."
-                  : "Pas de conversation structurée pour cet agent : utilise le terminal.",
+                  ? 'Conversation unavailable: run `herdr integration install claude` on the machine, then restart the agent. The terminal still works.'
+                  : 'No structured conversation for this agent: use the terminal.',
               style: const TextStyle(color: HuntawayColors.muted, fontSize: 13),
             ),
           ),
@@ -189,7 +189,7 @@ class _AgentScreenState extends State<AgentScreen> {
                         child: Center(
                           child: timeline.loading
                               ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                              : Text(timeline.hasMore ? '' : 'Début de la conversation',
+                              : Text(timeline.hasMore ? '' : 'Start of the conversation',
                                   style: const TextStyle(color: HuntawayColors.muted, fontSize: 12)),
                         ),
                       );
@@ -230,8 +230,8 @@ class _AgentScreenState extends State<AgentScreen> {
                       hintText: !pending
                           ? 'Message ${agent.displayName}…'
                           : agent.interaction?.freeTextOption != null
-                              ? 'Répondre librement…'
-                              : 'Refuser et expliquer…',
+                              ? 'Type an answer…'
+                              : 'Deny and explain…',
                     ),
                     onChanged: (_) => setState(() {}),
                   ),
@@ -244,7 +244,7 @@ class _AgentScreenState extends State<AgentScreen> {
                       foregroundColor: Colors.white,
                       fixedSize: const Size(44, 44),
                     ),
-                    tooltip: 'Interrompre',
+                    tooltip: 'Stop',
                     onPressed: _sending ? null : () => _run(() => c.client.interrupt(agent.id)),
                     icon: const Icon(Icons.stop_rounded),
                   )
@@ -254,7 +254,7 @@ class _AgentScreenState extends State<AgentScreen> {
                       fixedSize: const Size(44, 44),
                       disabledBackgroundColor: HuntawayColors.surfaceHigh,
                     ),
-                    tooltip: pending ? 'Refuser et expliquer' : 'Envoyer',
+                    tooltip: pending ? 'Deny and explain' : 'Send',
                     onPressed: _sending || _input.text.trim().isEmpty ? null : () => _submit(c, agent),
                     icon: _sending
                         ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
@@ -268,7 +268,7 @@ class _AgentScreenState extends State<AgentScreen> {
   }
 }
 
-/// "● Exécute npm test… 0:42" above the composer while the agent works.
+/// "● Running npm test… 0:42" above the composer while the agent works.
 class _LiveLine extends StatelessWidget {
   const _LiveLine({required this.agent, required this.timeline});
   final Agent agent;
@@ -285,12 +285,12 @@ class _LiveLine extends StatelessWidget {
       if (item.isMessage) break;
     }
     final what = switch (lastCall?.kind) {
-      null => 'Réfléchit',
-      'file_read' => 'Lit ${lastCall!.summary}',
-      'search' => 'Cherche ${lastCall!.summary}',
-      'file_modified' => 'Modifie ${lastCall!.summary}',
-      'command' => 'Exécute ${lastCall!.summary}',
-      'subagent' => 'Sous-agent : ${lastCall!.summary}',
+      null => 'Thinking',
+      'file_read' => 'Reading ${lastCall!.summary}',
+      'search' => 'Searching ${lastCall!.summary}',
+      'file_modified' => 'Editing ${lastCall!.summary}',
+      'command' => 'Running ${lastCall!.summary}',
+      'subagent' => 'Subagent: ${lastCall!.summary}',
       _ => '${lastCall!.name} ${lastCall.summary}',
     };
     return Container(
@@ -335,10 +335,10 @@ class InteractionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final i = agent.interaction!;
     final title = switch (i.reason) {
-      'approval' => '${agent.displayName} demande une autorisation',
-      'question' => '${agent.displayName} te pose une question',
-      'plan' => '${agent.displayName} propose un plan',
-      _ => '${agent.displayName} attend une réponse',
+      'approval' => '${agent.displayName} asks for permission',
+      'question' => '${agent.displayName} has a question',
+      'plan' => '${agent.displayName} proposes a plan',
+      _ => '${agent.displayName} is waiting for an answer',
     };
     final command = i.tool == null
         ? null
@@ -389,7 +389,7 @@ class InteractionCard extends StatelessWidget {
         ],
         const SizedBox(height: 12),
         if (options.isEmpty)
-          const Text("Lecture des options à l'écran…", style: TextStyle(color: HuntawayColors.muted, fontSize: 13))
+          const Text('Reading the on-screen options…', style: TextStyle(color: HuntawayColors.muted, fontSize: 13))
         else if (i.reason == 'approval')
           _ApprovalButtons(options: options, busy: busy, onChoose: onChoose, onDeny: onDeny)
         else
@@ -413,7 +413,7 @@ class InteractionCard extends StatelessWidget {
                 ),
               ),
             if (i.freeTextOption != null)
-              const Text('Ou réponds librement ci-dessous.',
+              const Text('Or type an answer below.',
                   style: TextStyle(color: HuntawayColors.muted, fontSize: 12.5)),
           ]),
       ]),
@@ -444,14 +444,14 @@ class _ApprovalButtons extends StatelessWidget {
         Expanded(
           child: OutlinedButton(
             onPressed: busy ? null : (no != null ? () => choose(no.number) : onDeny),
-            child: const Text('Refuser'),
+            child: const Text('Deny'),
           ),
         ),
         const SizedBox(width: 10),
         Expanded(
           child: FilledButton(
             onPressed: busy ? null : () => choose(yes.number),
-            child: const Text('Approuver'),
+            child: const Text('Approve'),
           ),
         ),
       ]),

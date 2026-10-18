@@ -37,8 +37,8 @@ class BackgroundLink {
     FlutterForegroundTask.init(
       androidNotificationOptions: AndroidNotificationOptions(
         channelId: 'huntaway_link',
-        channelName: 'Connexion Huntaway',
-        channelDescription: 'Garde la connexion aux machines quand Huntaway est en arrière-plan',
+        channelName: 'Huntaway connection',
+        channelDescription: 'Keeps the connection to your machines while Huntaway is in the background',
       ),
       iosNotificationOptions: const IOSNotificationOptions(showNotification: false),
       foregroundTaskOptions: ForegroundTaskOptions(
@@ -57,8 +57,8 @@ class BackgroundLink {
     await FlutterForegroundTask.startService(
       serviceId: 7420,
       serviceTypes: const [ForegroundServiceTypes.remoteMessaging],
-      notificationTitle: 'Huntaway surveille tes agents',
-      notificationText: 'Connexion maintenue pour les alertes',
+      notificationTitle: 'Huntaway is watching your agents',
+      notificationText: 'Connection kept alive for alerts',
       notificationIcon: const NotificationIcon(metaDataName: 'app.huntaway.NOTIFICATION_ICON'),
       callback: keepAliveCallback,
     );

@@ -32,7 +32,7 @@ void main() {
       expect(entries.length, 3);
       expect(entries[0], isA<MessageEntry>());
       final activity = entries[1] as ActivityEntry;
-      expect(activity.summary, '2 lectures · 1 modif · npm test');
+      expect(activity.summary, '2 reads · 1 edit · npm test');
       expect(activity.errors, 1);
       expect(entries[2], isA<MessageEntry>());
     });
@@ -42,7 +42,7 @@ void main() {
         item(0, 'tool_call', {'kind': 'command', 'summary': 'rm x', 'tool_use_id': 't1'}),
         item(1, 'tool_result', {'tool_use_id': 't1', 'is_error': true, 'rejected': true}),
         item(2, 'assistant_message', {'text': 'chatter', 'sidechain': true}),
-        item(3, 'notice', {'text': 'Interrompu par l\'utilisateur'}),
+        item(3, 'notice', {'text': 'Interrupted by user'}),
       ]);
       expect(entries.length, 2);
       final activity = entries[0] as ActivityEntry;
@@ -79,7 +79,7 @@ void main() {
     });
     expect(agent.key, 'm1/default:w1:p2');
     expect(agent.attention.status, AttentionStatus.blocked);
-    expect(agent.attention.label, 'Approbation');
+    expect(agent.attention.label, 'Approval');
     expect(agent.interaction!.tool!.input['command'], 'npm test');
     expect(agent.interaction!.options.last.label, 'No');
     expect(agent.displayName, 'Claude');

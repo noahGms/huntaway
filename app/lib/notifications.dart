@@ -38,7 +38,7 @@ class Notifier {
   AndroidNotificationDetails get _channel => AndroidNotificationDetails(
         'agents',
         'Agents',
-        channelDescription: 'Agents bloqués ou terminés',
+        channelDescription: 'Agents that are blocked or done',
         importance: Importance.high,
         priority: Priority.high,
         visibility: hideOnLockScreen ? NotificationVisibility.private : NotificationVisibility.public,

@@ -139,7 +139,7 @@ class _HomeShellState extends State<HomeShell> {
             label: 'Inbox',
           ),
           const NavigationDestination(icon: Icon(Icons.dns_outlined), selectedIcon: Icon(Icons.dns), label: 'Machines'),
-          const NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: 'Réglages'),
+          const NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: 'Settings'),
         ],
       ),
     );
@@ -162,7 +162,7 @@ class WelcomeScreen extends StatelessWidget {
             const Text('Huntaway', style: TextStyle(fontSize: 36, fontWeight: FontWeight.w700, letterSpacing: -0.5)),
             const SizedBox(height: 8),
             const Text(
-              'Suis tes agents Herdr, réponds-leur et débloque-les depuis ton téléphone.',
+              'Follow your Herdr agents, answer them and unblock them from your phone.',
               style: TextStyle(fontSize: 16.5, color: HuntawayColors.muted, height: 1.45),
             ),
             const SizedBox(height: 32),
@@ -174,9 +174,9 @@ class WelcomeScreen extends StatelessWidget {
                 border: Border.all(color: HuntawayColors.border),
               ),
               child: const Column(children: [
-                _Step('1', 'Installe et lance huntawayd sur ta machine.'),
-                _Step('2', 'Lance huntawayd pair : un QR code s’affiche.', code: 'huntawayd pair'),
-                _Step('3', 'Scanne-le avec ce téléphone.', last: true),
+                _Step('1', 'Install and start huntawayd on your machine.'),
+                _Step('2', 'Run huntawayd pair to show a QR code.', code: 'huntawayd pair'),
+                _Step('3', 'Scan it with this phone.', last: true),
               ]),
             ),
             const Spacer(flex: 3),
@@ -190,7 +190,7 @@ class WelcomeScreen extends StatelessWidget {
                   if (paired == true) Notifier.instance.requestPermission();
                 },
                 icon: const Icon(Icons.qr_code_scanner),
-                label: const Text('Ajouter une machine'),
+                label: const Text('Add a machine'),
               ),
             ),
           ]),

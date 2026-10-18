@@ -64,7 +64,7 @@ class _InboxScreenState extends State<InboxScreen> {
             ? TextField(
                 controller: _search,
                 autofocus: true,
-                decoration: const InputDecoration(hintText: 'Projet, tâche, machine…'),
+                decoration: const InputDecoration(hintText: 'Project, task, machine…'),
                 onChanged: (_) => setState(() {}),
               )
             : const Row(children: [
@@ -79,7 +79,7 @@ class _InboxScreenState extends State<InboxScreen> {
               child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
             ),
           IconButton(
-            tooltip: _searching ? 'Fermer la recherche' : 'Rechercher',
+            tooltip: _searching ? 'Close search' : 'Search',
             icon: Icon(_searching ? Icons.close : Icons.search),
             onPressed: () => setState(() {
               _searching = !_searching;
@@ -106,7 +106,7 @@ class _InboxScreenState extends State<InboxScreen> {
             else if (blocked.isEmpty)
               const _AllClear(),
             if (blocked.isNotEmpty) ...[
-              _SectionHeader('Besoin de toi', blocked.length, color: HuntawayColors.blocked),
+              _SectionHeader('Needs you', blocked.length, color: HuntawayColors.blocked),
               for (final a in blocked)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
@@ -114,15 +114,15 @@ class _InboxScreenState extends State<InboxScreen> {
                 ),
             ],
             if (working.isNotEmpty) ...[
-              _SectionHeader('En cours', working.length),
+              _SectionHeader('Working', working.length),
               _Group([for (final a in working) AgentRow(a, machine: machineOf(a))]),
             ],
             if (done.isNotEmpty) ...[
-              _SectionHeader('Terminé', done.length),
+              _SectionHeader('Done', done.length),
               _Group([for (final a in done) AgentRow(a, machine: machineOf(a))]),
             ],
             if (idle.isNotEmpty) ...[
-              _SectionHeader('Inactifs', idle.length,
+              _SectionHeader('Idle', idle.length,
                   expanded: _showIdle, onTap: () => setState(() => _showIdle = !_showIdle)),
               if (_showIdle || _search.text.isNotEmpty)
                 _Group([for (final a in idle) AgentRow(a, machine: machineOf(a))]),
@@ -180,7 +180,7 @@ class _MachineFilter extends StatelessWidget {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
         children: [
-          chip('Toutes', null),
+          chip('All', null),
           for (final c in connections) chip(c.machine.name, c.machine.machineId, status: c.status),
         ],
       ),
@@ -247,7 +247,7 @@ class _AllClear extends StatelessWidget {
         child: Row(children: [
           Icon(Icons.check_circle_outline, size: 18, color: HuntawayColors.done),
           SizedBox(width: 8),
-          Text('Aucun agent ne t’attend', style: TextStyle(color: HuntawayColors.muted, fontSize: 14)),
+          Text('No agent is waiting for you', style: TextStyle(color: HuntawayColors.muted, fontSize: 14)),
         ]),
       );
 }
@@ -263,14 +263,14 @@ class _EmptyInbox extends StatelessWidget {
           const HuntawayLogo(size: 56),
           const SizedBox(height: 18),
           Text(
-            query.isNotEmpty ? 'Aucun agent ne correspond à « $query »' : 'Aucun agent pour le moment',
+            query.isNotEmpty ? 'No agent matches "$query"' : 'No agents yet',
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
           ),
           if (query.isEmpty) ...[
             const SizedBox(height: 6),
             const Text(
-              'Lance Claude ou Codex dans Herdr sur une machine appairée : il apparaîtra ici.',
+              'Start Claude or Codex in Herdr on a paired machine and it will show up here.',
               textAlign: TextAlign.center,
               style: TextStyle(color: HuntawayColors.muted, height: 1.4),
             ),
@@ -308,7 +308,7 @@ class AgentRow extends StatelessWidget {
               if (agent.warnings.contains('missing_herdr_integration'))
                 const Padding(
                   padding: EdgeInsets.only(top: 3),
-                  child: Text('Intégration Herdr manquante',
+                  child: Text('Herdr integration missing',
                       style: TextStyle(color: HuntawayColors.blocked, fontSize: 12)),
                 ),
             ]),
@@ -366,10 +366,10 @@ class _BlockedCardState extends State<BlockedCard> {
         ? null
         : (i!.tool!.input['command'] as String?) ?? (i.tool!.input['file_path'] as String?) ?? i.tool!.summary;
     final (String heading, String? body) = switch (i) {
-      Interaction(reason: 'approval', :final tool?) => ('Veut utiliser ${tool.name}', null),
+      Interaction(reason: 'approval', :final tool?) => ('Wants to use ${tool.name}', null),
       Interaction(:final questions) when questions.isNotEmpty => ('Question', questions.first.question),
-      Interaction(reason: 'plan') => ('Plan à valider', agent.summary),
-      _ => ('Attend ta réponse', agent.summary.isEmpty ? null : agent.summary),
+      Interaction(reason: 'plan') => ('Plan to review', agent.summary),
+      _ => ('Waiting for your answer', agent.summary.isEmpty ? null : agent.summary),
     };
 
     return Material(
@@ -423,7 +423,7 @@ class _BlockedCardState extends State<BlockedCard> {
                     onPressed: _busy
                         ? null
                         : () => _choose(c, i.options.length > 1 ? i.options.last.number : null),
-                    child: const Text('Refuser'),
+                    child: const Text('Deny'),
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -431,7 +431,7 @@ class _BlockedCardState extends State<BlockedCard> {
                   child: FilledButton(
                     style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 10)),
                     onPressed: _busy ? null : () => _choose(c, i.options.first.number),
-                    child: const Text('Approuver'),
+                    child: const Text('Approve'),
                   ),
                 ),
               ])
@@ -446,7 +446,7 @@ class _BlockedCardState extends State<BlockedCard> {
                   ),
                   onPressed: () => openAgent(context, agent),
                   icon: const Icon(Icons.reply_rounded, size: 18),
-                  label: const Text('Répondre'),
+                  label: const Text('Reply'),
                 ),
               ),
           ]),
@@ -490,7 +490,7 @@ class ProjectsScreen extends StatelessWidget {
               if (entry.value.$2.isEmpty)
                 const Padding(
                   padding: EdgeInsets.fromLTRB(44, 0, 20, 8),
-                  child: Text('Aucun agent', style: TextStyle(color: HuntawayColors.muted, fontSize: 13)),
+                  child: Text('No agents', style: TextStyle(color: HuntawayColors.muted, fontSize: 13)),
                 )
               else
                 _Group([for (final agent in entry.value.$2) AgentRow(agent)]),
@@ -564,12 +564,12 @@ class _MachineHeader extends StatelessWidget {
               Text(
                 [
                   switch (c.status) {
-                    ConnectionStatus.online => 'En ligne',
-                    ConnectionStatus.connecting => 'Connexion…',
-                    ConnectionStatus.offline => 'Hors ligne',
+                    ConnectionStatus.online => 'Online',
+                    ConnectionStatus.connecting => 'Connecting…',
+                    ConnectionStatus.offline => 'Offline',
                   },
                   '${agents.length} agent${agents.length > 1 ? 's' : ''}',
-                  if (waiting > 0) '$waiting en attente',
+                  if (waiting > 0) '$waiting waiting',
                 ].join(' · '),
                 style: const TextStyle(color: HuntawayColors.muted, fontSize: 12.5),
               ),

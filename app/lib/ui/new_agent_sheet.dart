@@ -49,7 +49,7 @@ class _NewAgentFormState extends State<_NewAgentForm> {
       ));
       if (!promptSent && _prompt.text.trim().isNotEmpty && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text("L'agent attend une réponse au démarrage : réponds-lui puis renvoie ta consigne."),
+          content: Text('The agent is waiting for an answer at startup: answer it, then send your prompt again.'),
         ));
       }
     } catch (e) {
@@ -66,7 +66,7 @@ class _NewAgentFormState extends State<_NewAgentForm> {
       child: Padding(
         padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
         child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          const Text('Nouvel agent', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+          const Text('New agent', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
           Text('${widget.project} · ${widget.connection.machine.name}',
               style: const TextStyle(color: HuntawayColors.muted)),
@@ -86,7 +86,7 @@ class _NewAgentFormState extends State<_NewAgentForm> {
             maxLines: 8,
             autofocus: true,
             textCapitalization: TextCapitalization.sentences,
-            decoration: const InputDecoration(hintText: 'Consigne initiale…'),
+            decoration: const InputDecoration(hintText: 'Initial prompt…'),
           ),
           const SizedBox(height: 16),
           FilledButton(
@@ -94,7 +94,7 @@ class _NewAgentFormState extends State<_NewAgentForm> {
             onPressed: _busy ? null : _launch,
             child: _busy
                 ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Text("Lancer l'agent"),
+                : const Text('Start agent'),
           ),
         ]),
       ),
