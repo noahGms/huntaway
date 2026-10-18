@@ -68,7 +68,9 @@ fn open_conversation(app: &AppHandle, machine_id: &str, agent_id: &str) {
 }
 
 pub fn show(p: Pending) {
-    // A newer notification for the same agent replaces the previous one.
+    // A newer notification for the same agent replaces the previous one
+    // (Linux replaces it in place, by id).
+    #[cfg(target_os = "macos")]
     dismiss(&p.app, &p.machine_id, &p.notification.agent_id);
     // Waiting for the user's answer blocks: one thread per notification.
     std::thread::spawn(move || {
@@ -84,14 +86,116 @@ fn show_native(_: &Pending) -> Result<(), String> {
     Err("no actionable notifications on this system".into())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn dismiss(_: &AppHandle, _: &str, _: &str) {}
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn dismiss_stale(_: &AppHandle, _: &str, _: &str, _: Option<&str>) {}
+
+/// Notifications on screen per agent (`machine/agent`), for systems that
+/// address them by id (freedesktop). Each one shown gets a new generation:
+/// a notification replaced in place keeps its id, so the thread waiting on
+/// the older one hears the newer one's actions too, and must ignore them.
+#[derive(Default)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub struct OnScreen {
+    shown: std::collections::HashMap<String, ShownId>,
+    generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub struct ShownId {
+    pub id: u32,
+    pub generation: u64,
+    pub interaction_id: Option<String>,
+    pub summary: String,
+    pub body: String,
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+impl OnScreen {
+    /// Id of the agent's notification still on screen, to replace it.
+    pub fn replaces(&self, key: &str) -> Option<u32> {
+        self.shown.get(key).map(|s| s.id)
+    }
+
+    /// Records a notification just shown; returns its generation.
+    pub fn shown(&mut self, key: &str, id: u32, interaction_id: Option<String>, summary: String, body: String) -> u64 {
+        self.generation += 1;
+        let generation = self.generation;
+        self.shown.insert(key.to_string(), ShownId { id, generation, interaction_id, summary, body });
+        generation
+    }
+
+    /// The user acted on (or closed) notification `generation`: true when it
+    /// is still the agent's latest, which alone may act. Forgets it.
+    pub fn answered(&mut self, key: &str, generation: u64) -> bool {
+        let latest = self.shown.get(key).is_some_and(|s| s.generation == generation);
+        if latest {
+            self.shown.remove(key);
+        }
+        latest
+    }
+
+    /// Takes the agent's notification off the books if it is about another
+    /// prompt than `current` (answered elsewhere, or a new one): to close.
+    pub fn take_stale(&mut self, key: &str, current: Option<&str>) -> Option<ShownId> {
+        let stale = self.shown.get(key).is_some_and(|s| s.interaction_id.as_deref() != current);
+        if stale {
+            self.shown.remove(key)
+        } else {
+            None
+        }
+    }
+
+    pub fn take(&mut self, key: &str) -> Option<ShownId> {
+        self.shown.remove(key)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn on_screen() -> &'static std::sync::Mutex<OnScreen> {
+    static ON_SCREEN: std::sync::OnceLock<std::sync::Mutex<OnScreen>> = std::sync::OnceLock::new();
+    ON_SCREEN.get_or_init(Default::default)
+}
+
+/// Closes a notification by id: notify-rust only closes through a handle,
+/// so take the id over with the same text, then close it. Its waiting
+/// thread then sees it closed. D-Bus calls block: off the caller's thread.
+#[cfg(target_os = "linux")]
+fn close_linux(shown: ShownId) {
+    std::thread::spawn(move || {
+        let mut n = notify_rust::Notification::new();
+        n.appname("Huntaway").summary(&shown.summary).body(&shown.body).id(shown.id);
+        match n.show() {
+            Ok(handle) => handle.close(),
+            Err(e) => tracing::debug!(error = %e, "cannot close the notification"),
+        }
+    });
+}
+
+/// Closes the notification of an agent once it no longer shows the prompt
+/// it was about (answered elsewhere, or another prompt).
+#[cfg(target_os = "linux")]
+pub fn dismiss_stale(_: &AppHandle, machine_id: &str, agent_id: &str, current: Option<&str>) {
+    let stale = on_screen().lock().unwrap().take_stale(&format!("{machine_id}/{agent_id}"), current);
+    if let Some(shown) = stale {
+        close_linux(shown);
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn dismiss(_: &AppHandle, machine_id: &str, agent_id: &str) {
+    let shown = on_screen().lock().unwrap().take(&format!("{machine_id}/{agent_id}"));
+    if let Some(shown) = shown {
+        close_linux(shown);
+    }
+}
 
 #[cfg(target_os = "linux")]
 fn show_native(p: &Pending) -> Result<(), String> {
+    let key = format!("{}/{}", p.machine_id, p.notification.agent_id);
     let body = format!("{} · {}", p.machine_name, p.notification.body);
     let mut n = notify_rust::Notification::new();
     n.appname("Huntaway").summary(&p.notification.title).body(&body).action("default", "Open");
@@ -101,7 +205,12 @@ fn show_native(p: &Pending) -> Result<(), String> {
     if p.sound {
         n.sound_name("message-new-instant");
     }
+    // The agent's previous notification is replaced in place, not stacked.
+    if let Some(id) = on_screen().lock().unwrap().replaces(&key) {
+        n.id(id);
+    }
     let handle = n.show().map_err(|e| e.to_string())?;
+    let generation = on_screen().lock().unwrap().shown(&key, handle.id(), p.notification.interaction_id.clone(), p.notification.title.clone(), body);
     let mut response = Response::Dismissed;
     handle.wait_for_action(|action| {
         response = match action {
@@ -111,7 +220,10 @@ fn show_native(p: &Pending) -> Result<(), String> {
             _ => Response::Dismissed,
         }
     });
-    run(p, action_for(response, p.approve));
+    // Replaced by a newer notification of the agent, or closed as stale: not ours to answer.
+    if on_screen().lock().unwrap().answered(&key, generation) {
+        run(p, action_for(response, p.approve));
+    }
     Ok(())
 }
 
@@ -292,6 +404,32 @@ mod tests {
     fn approve_only_for_the_notified_prompt() {
         assert_eq!(approve_option(Some(&agent(BlockedReason::Approval, "Yes")), Some("q0")), None);
         assert_eq!(approve_option(Some(&agent(BlockedReason::Approval, "Yes")), None), None);
+    }
+
+    #[test]
+    fn only_the_latest_notification_of_an_agent_acts() {
+        let mut screen = OnScreen::default();
+        let first = screen.shown("m/a", 7, Some("q1".into()), "t".into(), "b".into());
+        assert_eq!(screen.replaces("m/a"), Some(7));
+        // Replaced in place (same id): the first thread hears the second one's click.
+        let second = screen.shown("m/a", 7, Some("q2".into()), "t".into(), "b".into());
+        assert!(!screen.answered("m/a", first));
+        assert!(screen.answered("m/a", second));
+        assert_eq!(screen.replaces("m/a"), None);
+    }
+
+    #[test]
+    fn answered_or_changed_prompts_are_stale() {
+        let mut screen = OnScreen::default();
+        let generation = screen.shown("m/a", 3, Some("q1".into()), "t".into(), "b".into());
+        assert!(screen.take_stale("m/a", Some("q1")).is_none());
+        assert_eq!(screen.take_stale("m/a", None).map(|s| s.id), Some(3));
+        // Closed as stale: its thread must not act on the close.
+        assert!(!screen.answered("m/a", generation));
+        // Done notifications (no prompt) survive updates of a working agent.
+        screen.shown("m/b", 4, None, "t".into(), "b".into());
+        assert!(screen.take_stale("m/b", None).is_none());
+        assert_eq!(screen.take("m/b").map(|s| s.id), Some(4));
     }
 
     #[test]
