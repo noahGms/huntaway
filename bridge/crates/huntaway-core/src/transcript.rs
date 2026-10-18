@@ -43,7 +43,9 @@ pub trait LineParser: Send {
 pub struct TranscriptTail {
     path: PathBuf,
     offset: u64,
-    partial: String,
+    /// Bytes of the last, incomplete line. Kept as bytes: a read can end in
+    /// the middle of a multi-byte character.
+    partial: Vec<u8>,
     make_parser: fn() -> Box<dyn LineParser>,
     parser: Box<dyn LineParser>,
 }
@@ -59,7 +61,7 @@ impl TranscriptTail {
     }
 
     pub fn with_parser(path: impl AsRef<Path>, make_parser: fn() -> Box<dyn LineParser>) -> Self {
-        Self { path: path.as_ref().to_path_buf(), offset: 0, partial: String::new(), make_parser, parser: make_parser() }
+        Self { path: path.as_ref().to_path_buf(), offset: 0, partial: Vec::new(), make_parser, parser: make_parser() }
     }
 
     pub fn path(&self) -> &Path {
@@ -83,13 +85,16 @@ impl TranscriptTail {
         let mut buf = Vec::with_capacity((len - self.offset) as usize);
         file.take(len - self.offset).read_to_end(&mut buf)?;
         self.offset = len;
-        self.partial.push_str(&String::from_utf8_lossy(&buf));
+        self.partial.extend_from_slice(&buf);
 
         let mut items = Vec::new();
-        while let Some(pos) = self.partial.find('\n') {
-            let line: String = self.partial.drain(..=pos).collect();
+        let mut start = 0;
+        while let Some(pos) = self.partial[start..].iter().position(|&b| b == b'\n') {
+            let line = String::from_utf8_lossy(&self.partial[start..start + pos]);
             items.extend(self.parser.parse_line(line.trim()));
+            start += pos + 1;
         }
+        self.partial.drain(..start);
         Ok(items)
     }
 
@@ -113,5 +118,28 @@ impl TranscriptTail {
     /// Bytes read so far.
     pub fn offset(&self) -> u64 {
         self.offset
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn multibyte_character_split_between_reads_is_kept() {
+        let dir = std::env::temp_dir().join(format!("huntaway-utf8-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        let line = r#"{"type":"user","uuid":"u1","timestamp":"t","message":{"content":"café 🐕"}}"#;
+        let cut = line.find('é').unwrap() + 1; // inside the two bytes of `é`
+        std::fs::write(&path, &line.as_bytes()[..cut]).unwrap();
+        let mut tail = TranscriptTail::new(&path);
+        assert!(tail.poll().unwrap().is_empty());
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(&line.as_bytes()[cut..]).unwrap();
+        f.write_all(b"\n").unwrap();
+        let items = tail.poll().unwrap();
+        assert!(matches!(&items[0], TimelineItem::UserMessage { text, .. } if text == "café 🐕"));
     }
 }
