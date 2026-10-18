@@ -251,17 +251,20 @@ const ProjectRow = memo(function ProjectRow({ row }: { row: Extract<SidebarRow, 
 });
 
 const ConversationRow = memo(function ConversationRow({ conv, active, depth, suffix }: { conv: Conversation; active: boolean; depth: number; suffix?: string }) {
-  const blocked = conv.attention?.status === "blocked";
+  // An offline machine's last known status is stale: grey it out.
+  const offline = useMachines((s) => s.machines[conv.machineId]?.status.state !== "online");
+  const attention = offline && conv.live ? null : conv.attention;
+  const blocked = attention?.status === "blocked";
   return (
     <div className="px-1.5">
       <button
         onClick={() => useUi.getState().select(conv.key)}
         className={`flex h-7 w-full items-center gap-2 rounded-md pr-2 text-left transition-colors ${active ? "bg-surface-high" : "hover:bg-surface-high/50"}`}
         style={indent(depth + (depth ? 0.6 : 0))}
-        title={`${conv.title}\n${conv.project} · ${conv.machineName}\n${agentLabel(conv.kind)} · ${statusLabel(conv.attention)}${conv.lastActivity ? ` · ${longDate(conv.lastActivity)}` : ""}`}
+        title={`${conv.title}\n${conv.project} · ${conv.machineName}\n${agentLabel(conv.kind)} · ${offline && conv.live ? "Machine offline" : statusLabel(conv.attention)}${conv.lastActivity ? ` · ${longDate(conv.lastActivity)}` : ""}`}
       >
         <span className="flex w-3 shrink-0 justify-center">
-          <StatusDot attention={conv.attention} size={7} />
+          <StatusDot attention={attention} size={7} />
         </span>
         <span className={`min-w-0 flex-1 truncate text-[13px] leading-5 ${conv.live ? (active ? "text-text" : "text-[#d9d5ce]") : "text-muted"}`}>{conv.title}</span>
         {suffix && <span className="min-w-0 max-w-[40%] shrink truncate text-[11px] text-faint">{suffix}</span>}
