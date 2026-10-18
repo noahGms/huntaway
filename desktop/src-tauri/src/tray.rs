@@ -16,9 +16,9 @@ pub fn show_window(app: &AppHandle) {
 }
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Ouvrir Huntaway", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Open Huntaway", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "quit", "Quitter Huntaway", true, Some("CmdOrCtrl+Q"))?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Huntaway", true, Some("CmdOrCtrl+Q"))?;
     let menu = Menu::with_items(app, &[&open, &separator, &quit])?;
     let icon = Image::from_bytes(include_bytes!("../icons/tray.png"))?;
     TrayIconBuilder::with_id(TRAY_ID)
@@ -48,8 +48,8 @@ pub fn set_count(app: &AppHandle, count: usize) {
         let _ = tray.set_title(title.as_deref());
         let tooltip = match count {
             0 => "Huntaway".to_string(),
-            1 => "Huntaway · 1 agent t'attend".to_string(),
-            n => format!("Huntaway · {n} agents t'attendent"),
+            1 => "Huntaway · 1 agent waiting".to_string(),
+            n => format!("Huntaway · {n} agents waiting"),
         };
         let _ = tray.set_tooltip(Some(tooltip));
     }

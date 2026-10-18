@@ -82,7 +82,7 @@ pub fn status() -> LocalStatus {
 
 /// Installs (if needed) and starts the background service.
 pub fn start_service() -> Result<(), String> {
-    let binary = daemon_binary().ok_or("huntawayd n'est pas installé")?;
+    let binary = daemon_binary().ok_or("huntawayd is not installed")?;
     let out = Command::new(&binary).args(["service", "install", "--start"]).output().map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(())
@@ -101,6 +101,6 @@ pub fn device_name() -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty())
         .or_else(|| Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()))
-        .unwrap_or_else(|| "ordinateur".into());
+        .unwrap_or_else(|| "computer".into());
     format!("Huntaway Desktop ({host})")
 }

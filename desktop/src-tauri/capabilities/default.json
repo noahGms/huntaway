@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Fenêtre principale : commandes Huntaway, notifications, ouverture de dossiers locaux.",
+  "description": "Main window: Huntaway commands, notifications, opening local folders and links.",
   "windows": [
     "main"
   ],

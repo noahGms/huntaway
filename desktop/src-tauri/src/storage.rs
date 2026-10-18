@@ -126,7 +126,7 @@ impl Storage {
         if stored.is_ok() && read_back.as_deref() == Some(token) {
             return Ok(());
         }
-        tracing::warn!("trousseau indisponible : token stocké dans un fichier privé");
+        tracing::warn!("keychain unavailable: token stored in a private file");
         let mut tokens: HashMap<String, String> = self.read("tokens.json");
         tokens.insert(machine_id.to_string(), token.to_string());
         self.write("tokens.json", &tokens)

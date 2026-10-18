@@ -49,7 +49,7 @@ pub fn run() {
             // Linux has no install-time registration of `huntaway://` (AppImage).
             #[cfg(target_os = "linux")]
             if let Err(e) = app.deep_link().register_all() {
-                tracing::warn!(error = %e, "schéma huntaway:// non enregistré");
+                tracing::warn!(error = %e, "huntaway:// scheme not registered");
             }
             let handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
@@ -92,7 +92,7 @@ pub fn run() {
             commands::test_notification,
         ])
         .build(tauri::generate_context!())
-        .expect("démarrage de Huntaway Desktop");
+        .expect("failed to start Huntaway Desktop");
 
     app.run(|app, event| {
         // Dock icon clicked while the window is hidden.
