@@ -56,7 +56,7 @@ impl Summary {
         self.title
             .clone()
             .or_else(|| self.first_message.clone())
-            .unwrap_or_else(|| "Conversation sans titre".into())
+            .unwrap_or_else(|| "Untitled conversation".into())
     }
 
     pub fn project(&self) -> String {
