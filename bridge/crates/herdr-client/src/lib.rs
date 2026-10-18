@@ -178,6 +178,58 @@ pub struct TabInfo {
     pub label: Option<String>,
 }
 
+/// A pane as listed by `pane.list` (shells included, unlike `agent.list`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PaneInfo {
+    pub pane_id: String,
+    pub workspace_id: String,
+    pub tab_id: String,
+    pub terminal_id: Option<String>,
+    pub cwd: Option<String>,
+    pub agent: Option<String>,
+}
+
+/// Shell of a pane and its foreground process group (`pane.process_info`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProcessInfo {
+    pub shell_pid: Option<u32>,
+    pub foreground_process_group_id: Option<u32>,
+}
+
+impl ProcessInfo {
+    /// A command runs in the foreground: the terminal no longer belongs to
+    /// the shell's own process group.
+    pub fn command_running(&self) -> bool {
+        match (self.shell_pid, self.foreground_process_group_id) {
+            (Some(shell), Some(group)) => shell != group,
+            _ => false,
+        }
+    }
+}
+
+/// Tab and root pane created by `tab.create` / `workspace.create`.
+#[derive(Debug, Clone)]
+pub struct CreatedTab {
+    pub workspace_id: String,
+    pub tab_id: String,
+    pub pane_id: String,
+    pub terminal_id: Option<String>,
+}
+
+impl CreatedTab {
+    fn from_result(result: &Value) -> Result<Self> {
+        let pane = ["root_pane", "pane"].iter().map(|k| &result[*k]).find(|p| p["pane_id"].is_string());
+        let pane = pane.ok_or_else(|| Error::Unexpected(result.to_string()))?;
+        let text = |v: &Value| v.as_str().map(str::to_string);
+        Ok(Self {
+            workspace_id: text(&pane["workspace_id"]).unwrap_or_default(),
+            tab_id: text(&pane["tab_id"]).or_else(|| text(&result["tab"]["tab_id"])).unwrap_or_default(),
+            pane_id: text(&pane["pane_id"]).unwrap_or_default(),
+            terminal_id: text(&pane["terminal_id"]),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Snapshot {
     pub version: Option<String>,
@@ -225,6 +277,12 @@ pub const USED_METHODS: &[&str] = &[
     "workspace.create",
     "pane.send_text",
     "events.subscribe",
+    "pane.list",
+    "pane.read",
+    "pane.send_keys",
+    "pane.process_info",
+    "pane.close",
+    "tab.rename",
 ];
 
 /// Methods of [`USED_METHODS`] missing from a schema printed by
@@ -332,6 +390,62 @@ impl Client {
 
     pub async fn tab_list(&self) -> Result<Vec<TabInfo>> {
         self.call_field("tab.list", json!({}), "tabs").await
+    }
+
+    /// Every pane of the session (or of one workspace), shells included.
+    pub async fn pane_list(&self, workspace_id: Option<&str>) -> Result<Vec<PaneInfo>> {
+        self.call_field("pane.list", json!({ "workspace_id": workspace_id }), "panes").await
+    }
+
+    pub async fn pane_process_info(&self, pane_id: &str) -> Result<ProcessInfo> {
+        self.call_field("pane.process_info", json!({ "pane_id": pane_id }), "process_info").await
+    }
+
+    /// Reads any pane's screen (not only agents'); `ansi` keeps the colors.
+    pub async fn pane_read(&self, pane_id: &str, source: ReadSource, lines: Option<u32>, ansi: bool) -> Result<String> {
+        let mut params = json!({ "pane_id": pane_id, "source": source.as_str(), "lines": lines });
+        if ansi {
+            params["format"] = json!("ansi");
+            params["strip_ansi"] = json!(false);
+        }
+        let result = self.call("pane.read", params).await?;
+        Ok(result["read"]["text"].as_str().unwrap_or_default().to_string())
+    }
+
+    /// Sends Herdr key names (`enter`, `ctrl+c`…) to any pane.
+    pub async fn pane_send_keys(&self, pane_id: &str, keys: &[&str]) -> Result<Value> {
+        self.call("pane.send_keys", json!({ "pane_id": pane_id, "keys": keys })).await
+    }
+
+    /// Closes a pane and its process (its tab too when it was the last one).
+    pub async fn pane_close(&self, pane_id: &str) -> Result<Value> {
+        self.call("pane.close", json!({ "pane_id": pane_id })).await
+    }
+
+    pub async fn tab_rename(&self, tab_id: &str, label: &str) -> Result<Value> {
+        self.call("tab.rename", json!({ "tab_id": tab_id, "label": label })).await
+    }
+
+    /// Like [`Client::tab_create`], with environment variables for its
+    /// shell and the ids of the new tab.
+    pub async fn tab_create_full(&self, workspace_id: &str, label: Option<&str>, cwd: Option<&str>, env: &[(&str, &str)]) -> Result<CreatedTab> {
+        let env: serde_json::Map<String, Value> = env.iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+        let mut params = json!({ "workspace_id": workspace_id, "label": label, "focus": false, "env": env });
+        if let Some(cwd) = cwd {
+            params["cwd"] = json!(cwd);
+        }
+        CreatedTab::from_result(&self.call("tab.create", params).await?)
+    }
+
+    /// Like [`Client::workspace_create`], with its first tab and pane.
+    pub async fn workspace_create_full(&self, cwd: &str, label: Option<&str>, env: &[(&str, &str)]) -> Result<CreatedTab> {
+        let env: serde_json::Map<String, Value> = env.iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+        let result = self.call("workspace.create", json!({ "cwd": cwd, "label": label, "focus": false, "env": env })).await?;
+        let mut created = CreatedTab::from_result(&result)?;
+        if created.workspace_id.is_empty() {
+            created.workspace_id = result["workspace"]["workspace_id"].as_str().unwrap_or_default().to_string();
+        }
+        Ok(created)
     }
 
     pub async fn agent_get(&self, target: &str) -> Result<AgentInfo> {
@@ -603,6 +717,22 @@ mod tests {
         assert!(missing_methods(&schema).is_empty());
         let partial = json!({ "schemas": { "request": { "oneOf": [variant("ping")] } } });
         assert!(missing_methods(&partial).contains(&"agent.prompt"));
+    }
+
+    #[test]
+    fn created_tab_and_process_info_parse() {
+        let result = json!({
+            "type": "tab_created",
+            "tab": { "tab_id": "w9:t2" },
+            "root_pane": { "pane_id": "w9:p2", "terminal_id": "term_1", "workspace_id": "w9", "tab_id": "w9:t2" }
+        });
+        let tab = CreatedTab::from_result(&result).unwrap();
+        assert_eq!((tab.workspace_id.as_str(), tab.tab_id.as_str(), tab.pane_id.as_str()), ("w9", "w9:t2", "w9:p2"));
+        assert_eq!(tab.terminal_id.as_deref(), Some("term_1"));
+        let idle: ProcessInfo = serde_json::from_value(json!({ "shell_pid": 10, "foreground_process_group_id": 10 })).unwrap();
+        assert!(!idle.command_running());
+        let busy: ProcessInfo = serde_json::from_value(json!({ "shell_pid": 10, "foreground_process_group_id": 12 })).unwrap();
+        assert!(busy.command_running());
     }
 
     #[tokio::test]
