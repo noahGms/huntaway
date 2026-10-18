@@ -1,12 +1,12 @@
-import { Bot, Check, Clock, Cpu, FilePen, FileSearch, Globe, Loader2, MessageSquare, Server, SquareTerminal, Timer, X } from "lucide-react";
+import { Bot, Check, Cpu, FilePen, FileSearch, Folder, Globe, Loader2, MessageSquare, Server, SquareTerminal, Timer, X } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import type { RateWindow, Usage } from "../../api/types";
 import { computeActivity } from "../../lib/activity";
 import { statusLabel, type Conversation } from "../../lib/conversations";
-import { clockTime, duration, fullDate, tokens, usd } from "../../lib/format";
+import { clockTime, duration, fullDate, LOCALE, parseTime, tokens, usd } from "../../lib/format";
 import { useMachines } from "../../store/machines";
 import { useSettings } from "../../store/settings";
-import { Badge, attentionTone } from "../ui/Status";
+import { Badge, attentionTone, MachineDot } from "../ui/Status";
 import { TodoIcon } from "../conversation/TimelineRows";
 
 function Section({ title, right, children }: { title: string; right?: ReactNode; children: ReactNode }) {
@@ -33,6 +33,7 @@ function Line({ icon, label, value }: { icon: ReactNode; label: string; value: R
 
 export function ActivityTab({ conv }: { conv: Conversation }) {
   const timeline = useMachines((s) => s.timelines[conv.key]);
+  const machineState = useMachines((s) => s.machines[conv.machineId]?.status.state ?? "offline");
   const showCost = useSettings((s) => s.settings.show_cost);
   const [allCommands, setAllCommands] = useState(false);
   const activity = useMemo(() => computeActivity(timeline?.items ?? []), [timeline?.items]);
@@ -40,16 +41,24 @@ export function ActivityTab({ conv }: { conv: Conversation }) {
   const usage = agent?.usage ?? null;
   const model = agent?.model ?? conv.history?.model ?? usage?.model ?? null;
   const started = agent?.started_at ?? conv.history?.started_at ?? activity.startedAt;
+  // Whole conversation when its start and last activity are known; else the loaded items.
+  const last = agent?.last_activity_at ?? conv.history?.last_activity_at ?? null;
+  const span = parseTime(started) !== null && parseTime(last) !== null ? parseTime(last)! - parseTime(started)! : activity.durationMs;
+  // Only the latest page of a long conversation is loaded: counts are about it.
+  const partial = !!timeline?.hasMore;
+  const loaded = timeline?.items.length ?? 0;
   const commands = allCommands ? [...activity.commands].reverse() : activity.commands.slice(-5).reverse();
   const counts = activity.toolCounts;
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
   const tools: { icon: ReactNode; label: string; value: string; show: boolean }[] = [
-    { icon: <FilePen size={14} />, label: "Éditeur de fichiers", value: `${activity.files.length} fichier${activity.files.length > 1 ? "s" : ""} modifié${activity.files.length > 1 ? "s" : ""}`, show: (counts.file_modified ?? 0) > 0 },
-    { icon: <SquareTerminal size={14} />, label: "Terminal", value: `${counts.command ?? 0} commande${(counts.command ?? 0) > 1 ? "s" : ""}`, show: (counts.command ?? 0) > 0 },
-    { icon: <FileSearch size={14} />, label: "Lecture et recherche", value: `${(counts.file_read ?? 0) + (counts.search ?? 0)} appel${(counts.file_read ?? 0) + (counts.search ?? 0) > 1 ? "s" : ""}`, show: (counts.file_read ?? 0) + (counts.search ?? 0) > 0 },
-    { icon: <Globe size={14} />, label: "Recherche web", value: `${counts.web ?? 0} requête${(counts.web ?? 0) > 1 ? "s" : ""}`, show: (counts.web ?? 0) > 0 },
-    { icon: <Bot size={14} />, label: "Sous-agents", value: `${counts.subagent ?? 0}`, show: (counts.subagent ?? 0) > 0 },
+    { icon: <FilePen size={14} />, label: "File edits", value: `${plural(activity.files.length, "file")} changed`, show: (counts.file_modified ?? 0) > 0 },
+    { icon: <SquareTerminal size={14} />, label: "Terminal", value: plural(counts.command ?? 0, "command"), show: (counts.command ?? 0) > 0 },
+    { icon: <FileSearch size={14} />, label: "Reads and searches", value: plural((counts.file_read ?? 0) + (counts.search ?? 0), "call"), show: (counts.file_read ?? 0) + (counts.search ?? 0) > 0 },
+    { icon: <Globe size={14} />, label: "Web", value: plural(counts.web ?? 0, "request"), show: (counts.web ?? 0) > 0 },
+    { icon: <Bot size={14} />, label: "Subagents", value: `${counts.subagent ?? 0}`, show: (counts.subagent ?? 0) > 0 },
   ];
+  const partialNote = partial ? <span className="text-[11.5px] text-faint" title="Older items aren't loaded yet: scroll up in the conversation to load them.">last {loaded} events</span> : undefined;
 
   return (
     <div className="pb-6">
@@ -58,38 +67,42 @@ export function ActivityTab({ conv }: { conv: Conversation }) {
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <div className="truncate text-[13px] font-medium">{conv.title}</div>
-              <div className="mt-0.5 text-[11.5px] text-faint">Créée le {fullDate(started)}</div>
+              <div className="mt-0.5 text-[11.5px] text-faint">Started {fullDate(started)}</div>
             </div>
             <Badge tone={attentionTone(conv.attention)}>{statusLabel(conv.attention)}</Badge>
           </div>
         </div>
         <div className="px-3.5 py-2">
-          <Line icon={<Timer size={14} />} label="Durée" value={duration(activity.durationMs)} />
-          <Line icon={<MessageSquare size={14} />} label="Messages" value={activity.messages} />
-          <Line icon={<Cpu size={14} />} label="Modèle" value={model ?? "—"} />
+          <Line icon={<Timer size={14} />} label="Duration" value={duration(span)} />
+          <Line
+            icon={<MessageSquare size={14} />}
+            label="Messages"
+            value={partial ? <span title="Counted in the loaded part of the conversation">{activity.messages}+ <span className="text-faint">(last {loaded} events)</span></span> : activity.messages}
+          />
+          <Line icon={<Cpu size={14} />} label="Model" value={model ?? "—"} />
           <Line
             icon={<Server size={14} />}
-            label="Serveur"
+            label="Server"
             value={
-              <span className="flex items-center gap-1.5">
-                <span className="h-1.5 w-1.5 rounded-full bg-done" />
+              <span className="flex items-center gap-1.5" title={machineState}>
+                <MachineDot state={machineState} />
                 {conv.machineName}
               </span>
             }
           />
-          <Line icon={<Clock size={14} />} label="Projet" value={<span title={conv.cwd ?? undefined}>{conv.project}</span>} />
+          <Line icon={<Folder size={14} />} label="Project" value={<span title={conv.cwd ?? undefined}>{conv.project}</span>} />
         </div>
       </Section>
 
       {activity.todos.length > 0 && (
-        <Section title="Tâches en cours" right={<span className="text-[11.5px] text-faint">{activity.todos.filter((t) => t.status === "completed").length}/{activity.todos.length}</span>}>
+        <Section title="Tasks" right={<span className="text-[11.5px] text-faint">{activity.todos.filter((t) => t.status === "completed").length}/{activity.todos.length}</span>}>
           <ul className="space-y-2 px-3.5 py-3">
             {activity.todos.map((t, i) => (
               <li key={i} className="flex items-start gap-2.5 text-[12.5px]">
                 <TodoIcon status={t.status} />
                 <span className={t.status === "completed" ? "text-muted" : "text-text"}>
                   {t.content}
-                  {t.status === "in_progress" && <span className="block text-[11px] text-faint">En cours…</span>}
+                  {t.status === "in_progress" && <span className="block text-[11px] text-faint">In progress…</span>}
                 </span>
               </li>
             ))}
@@ -98,7 +111,7 @@ export function ActivityTab({ conv }: { conv: Conversation }) {
       )}
 
       {tools.some((t) => t.show) && (
-        <Section title="Outils utilisés">
+        <Section title="Tools used" right={partialNote}>
           <div className="px-3.5 py-2">
             {tools
               .filter((t) => t.show)
@@ -115,11 +128,11 @@ export function ActivityTab({ conv }: { conv: Conversation }) {
 
       {activity.commands.length > 0 && (
         <Section
-          title="Commandes récentes"
+          title="Recent commands"
           right={
             activity.commands.length > 5 && (
               <button className="text-[11.5px] text-blocked hover:underline" onClick={() => setAllCommands(!allCommands)}>
-                {allCommands ? "Réduire" : "Voir tout"}
+                {allCommands ? "Show less" : "Show all"}
               </button>
             )
           }
@@ -160,20 +173,20 @@ function UsageSection({ usage, showCost }: { usage: Usage; showCost: boolean }) 
       <div className="grid grid-cols-2 gap-x-4 gap-y-2 px-3.5 py-3 text-[12.5px]">
         <div className="flex justify-between">
           <span className="text-muted">Tokens</span>
-          <span title={`entrée ${tokens(usage.input_tokens)} · sortie ${tokens(usage.output_tokens)} · cache lu ${tokens(usage.cache_read_tokens)} · cache écrit ${tokens(usage.cache_write_tokens)}`}>{tokens(total)}</span>
+          <span title={`input ${tokens(usage.input_tokens)} · output ${tokens(usage.output_tokens)} · cache read ${tokens(usage.cache_read_tokens)} · cache write ${tokens(usage.cache_write_tokens)}`}>{tokens(total)}</span>
         </div>
         {showCost && (
-          <div className="flex justify-between" title="Estimation aux prix publics de l'API ; un abonnement est facturé autrement.">
-            <span className="text-muted">Coût estimé</span>
+          <div className="flex justify-between" title="Estimate at public API prices; subscriptions are billed differently.">
+            <span className="text-muted">Estimated cost</span>
             <span>{usd(usage.cost_usd)}</span>
           </div>
         )}
         <div className="flex justify-between">
-          <span className="text-muted">Contexte</span>
-          <span className={pct !== null && pct >= 80 ? "text-blocked" : "text-done"}>{pct !== null ? `${pct} %` : "—"}</span>
+          <span className="text-muted">Context</span>
+          <span className={pct !== null && pct >= 80 ? "text-blocked" : "text-done"}>{pct !== null ? `${pct}%` : "—"}</span>
         </div>
         <div className="flex justify-between">
-          <span className="text-muted">Limite</span>
+          <span className="text-muted">Window</span>
           <span>{usage.context_window ? `${tokens(usage.context_window)} tokens` : "—"}</span>
         </div>
         {pct !== null && (
@@ -184,9 +197,9 @@ function UsageSection({ usage, showCost }: { usage: Usage; showCost: boolean }) 
       </div>
       {limits && (limits.primary || limits.secondary) && (
         <div className="space-y-2.5 border-t border-border px-3.5 py-3">
-          <div className="text-[11.5px] text-faint">Limites du forfait{limits.plan_type ? ` (${limits.plan_type})` : ""}</div>
-          {limits.primary && <Limit label="Fenêtre courte" w={limits.primary} />}
-          {limits.secondary && <Limit label="Semaine" w={limits.secondary} />}
+          <div className="text-[11.5px] text-faint">Plan limits{limits.plan_type ? ` (${limits.plan_type})` : ""}</div>
+          {limits.primary && <Limit label="Short window" w={limits.primary} />}
+          {limits.secondary && <Limit label="Weekly" w={limits.secondary} />}
         </div>
       )}
     </Section>
@@ -195,7 +208,7 @@ function UsageSection({ usage, showCost }: { usage: Usage; showCost: boolean }) 
 
 function Limit({ label, w }: { label: string; w: RateWindow }) {
   const pct = Math.round(w.used_percent);
-  const reset = w.resets_at ? new Date(w.resets_at * 1000).toLocaleString("fr-FR", { weekday: "short", hour: "2-digit", minute: "2-digit" }) : null;
+  const reset = w.resets_at ? new Date(w.resets_at * 1000).toLocaleString(LOCALE, { weekday: "short", hour: "2-digit", minute: "2-digit" }) : null;
   return (
     <div>
       <div className="mb-1 flex justify-between text-[12px]">
@@ -204,7 +217,7 @@ function Limit({ label, w }: { label: string; w: RateWindow }) {
           {w.window_minutes && w.window_minutes < 1440 ? ` (${Math.round(w.window_minutes / 60)} h)` : ""}
         </span>
         <span className={pct >= 80 ? "text-blocked" : ""}>
-          {pct} %{reset && <span className="text-faint"> · remise à zéro {reset}</span>}
+          {pct}%{reset && <span className="text-faint"> · resets {reset}</span>}
         </span>
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-surface-high">

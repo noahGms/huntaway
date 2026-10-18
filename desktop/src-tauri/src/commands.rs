@@ -209,9 +209,11 @@ pub async fn open_terminal(machines: State<'_, Shared>, machine_id: String, agen
             };
             let closed = matches!(msg, TerminalMessage::Closed);
             if on_event.send(msg).is_err() || closed {
-                break;
+                return;
             }
         }
+        // Handle dropped (machine reconnected): the front end can reopen it.
+        let _ = on_event.send(TerminalMessage::Closed);
     });
     Ok(())
 }

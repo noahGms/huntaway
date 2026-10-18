@@ -1,5 +1,5 @@
 import { ChevronLeft, GitBranch, RefreshCw } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorMessage } from "../../api/client";
 import type { GitStatus, StoredItem } from "../../api/types";
 import { computeActivity } from "../../lib/activity";
@@ -17,18 +17,18 @@ function editsDiff(items: StoredItem[], path: string): Diff {
   for (const it of items) {
     if (it.type !== "tool_call" || it.kind !== "file_modified" || (it.change?.path ?? it.summary) !== path || !it.change) continue;
     const d = changeDiff(it.change);
-    out.lines.push({ type: "hunk", text: `Modification de ${clockTime(it.timestamp)}` }, ...d.lines);
+    out.lines.push({ type: "hunk", text: `Edit at ${clockTime(it.timestamp)}` }, ...d.lines);
     out.additions += d.additions;
     out.deletions += d.deletions;
   }
   return out;
 }
 
-const STATUS_LABEL: Record<string, string> = { M: "modifié", A: "ajouté", D: "supprimé", R: "renommé", "?": "nouveau", U: "conflit" };
+const STATUS_LABEL: Record<string, string> = { M: "modified", A: "added", D: "deleted", R: "renamed", "?": "new", U: "conflict" };
 
 export function FilesTab({ conv }: { conv: Conversation }) {
   const timeline = useMachines((s) => s.timelines[conv.key]);
-  const machine = useMachines((s) => s.machines[conv.machineId]);
+  const canRead = useMachines((s) => can(s.machines[conv.machineId], "files.read"));
   const { focusedFile, focusFile } = useUi();
   const items = timeline?.items ?? [];
   const activity = useMemo(() => computeActivity(items), [items]);
@@ -36,35 +36,44 @@ export function FilesTab({ conv }: { conv: Conversation }) {
   const [gitError, setGitError] = useState<string | null>(null);
   const [gitLoading, setGitLoading] = useState(false);
   const [gitFile, setGitFile] = useState<{ path: string; diff: Diff | null; error?: string } | null>(null);
-  const canGit = conv.live && !!conv.agentId && can(machine, "files.read");
+  const canGit = conv.live && !!conv.agentId && canRead;
+  // Answers for another conversation (switched meanwhile) are ignored.
+  const current = useRef(conv.key);
+  current.current = conv.key;
 
   const loadGit = async () => {
     if (!canGit) return;
+    const key = conv.key;
     setGitLoading(true);
     try {
-      setGit(await api.gitStatus(conv.machineId, conv.agentId!));
+      const status = await api.gitStatus(conv.machineId, conv.agentId!);
+      if (current.current !== key) return;
+      setGit(status);
       setGitError(null);
     } catch (e) {
-      setGitError(errorMessage(e));
+      if (current.current === key) setGitError(errorMessage(e));
     } finally {
-      setGitLoading(false);
+      if (current.current === key) setGitLoading(false);
     }
   };
 
   useEffect(() => {
     setGit(null);
+    setGitError(null);
+    setGitLoading(false);
     setGitFile(null);
     void loadGit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conv.key]);
 
   const openGitFile = async (path: string) => {
+    const key = conv.key;
     setGitFile({ path, diff: null });
     try {
       const { diff } = await api.gitDiff(conv.machineId, conv.agentId!, path);
-      setGitFile({ path, diff: parsePatch(diff) });
+      if (current.current === key) setGitFile((f) => (f?.path === path ? { path, diff: parsePatch(diff) } : f));
     } catch (e) {
-      setGitFile({ path, diff: null, error: errorMessage(e) });
+      if (current.current === key) setGitFile((f) => (f?.path === path ? { path, diff: null, error: errorMessage(e) } : f));
     }
   };
 
@@ -73,7 +82,7 @@ export function FilesTab({ conv }: { conv: Conversation }) {
     return (
       <div>
         <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-          <IconButton label="Retour" onClick={() => focusFile(null)}>
+          <IconButton label="Back" onClick={() => focusFile(null)}>
             <ChevronLeft size={15} />
           </IconButton>
           <span className="selectable min-w-0 flex-1 truncate font-mono text-[12px]" title={focusedFile}>
@@ -83,7 +92,7 @@ export function FilesTab({ conv }: { conv: Conversation }) {
             +{diff.additions} <span className="text-error">−{diff.deletions}</span>
           </span>
         </div>
-        {diff.lines.length ? <DiffView diff={diff} maxHeight={10_000} /> : <p className="p-5 text-[12.5px] text-muted">Pas de contenu pour ce fichier.</p>}
+        {diff.lines.length ? <DiffView diff={diff} maxHeight={10_000} /> : <p className="p-5 text-[12.5px] text-muted">No content for this file.</p>}
       </div>
     );
   }
@@ -92,7 +101,7 @@ export function FilesTab({ conv }: { conv: Conversation }) {
     return (
       <div>
         <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-          <IconButton label="Retour" onClick={() => setGitFile(null)}>
+          <IconButton label="Back" onClick={() => setGitFile(null)}>
             <ChevronLeft size={15} />
           </IconButton>
           <span className="selectable min-w-0 flex-1 truncate font-mono text-[12px]">{gitFile.path}</span>
@@ -105,7 +114,7 @@ export function FilesTab({ conv }: { conv: Conversation }) {
         {gitFile.error ? (
           <p className="p-5 text-[12.5px] text-error">{gitFile.error}</p>
         ) : gitFile.diff ? (
-          gitFile.diff.lines.length ? <DiffView diff={gitFile.diff} maxHeight={10_000} /> : <p className="p-5 text-[12.5px] text-muted">Aucune différence avec HEAD.</p>
+          gitFile.diff.lines.length ? <DiffView diff={gitFile.diff} maxHeight={10_000} /> : <p className="p-5 text-[12.5px] text-muted">No changes against HEAD.</p>
         ) : (
           <div className="flex justify-center p-6 text-muted"><Spinner /></div>
         )}
@@ -116,9 +125,12 @@ export function FilesTab({ conv }: { conv: Conversation }) {
   return (
     <div className="pb-6">
       <section className="px-5 pt-5">
-        <h3 className="mb-2 text-[13px] font-semibold">Modifiés par l'agent</h3>
+        <h3 className="mb-2 flex items-baseline justify-between text-[13px] font-semibold">
+          Changed by the agent
+          {timeline?.hasMore && <span className="text-[11.5px] font-normal text-faint">in the last {items.length} events</span>}
+        </h3>
         {activity.files.length === 0 ? (
-          <p className="text-[12.5px] text-faint">Aucun fichier modifié dans cette conversation.</p>
+          <p className="text-[12.5px] text-faint">No files changed in this conversation{timeline?.hasMore ? " (loaded part)" : ""}.</p>
         ) : (
           <ul className="overflow-hidden rounded-xl border border-border">
             {activity.files.map((f) => (
@@ -146,14 +158,14 @@ export function FilesTab({ conv }: { conv: Conversation }) {
               <GitBranch size={14} className="text-muted" />
               Git{git?.branch && <span className="font-mono text-[11.5px] font-normal text-muted">· {git.branch}</span>}
             </h3>
-            <IconButton label="Rafraîchir" onClick={() => void loadGit()} disabled={gitLoading}>
+            <IconButton label="Refresh" onClick={() => void loadGit()} disabled={gitLoading}>
               {gitLoading ? <Spinner /> : <RefreshCw size={13} />}
             </IconButton>
           </div>
           {gitError ? (
-            <p className="text-[12.5px] text-faint">{gitError.includes("not a git") ? "Ce projet n'est pas un dépôt git." : gitError}</p>
+            <p className="text-[12.5px] text-faint">{gitError.includes("not a git") ? "This project isn't a git repository." : gitError}</p>
           ) : git && git.files.length === 0 ? (
-            <p className="text-[12.5px] text-faint">Arbre de travail propre.</p>
+            <p className="text-[12.5px] text-faint">Working tree clean.</p>
           ) : git ? (
             <ul className="overflow-hidden rounded-xl border border-border">
               {git.files.slice(0, 300).map((f) => {
