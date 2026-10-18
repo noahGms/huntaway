@@ -149,6 +149,8 @@ struct AgentEntry {
     seen_at_secs: u64,
     /// Latest request typed by the user (not a slash command), for the summary.
     last_request: Option<String>,
+    /// Counts blocking prompts, to give prompts without a tool call an id.
+    block_seq: u64,
 }
 
 /// Usage metrics (PRD §22), in memory since the daemon started.
@@ -588,6 +590,7 @@ impl Engine {
             answered_from_huntaway: false,
             seen_at_secs: now_ms() / 1000,
             last_request: None,
+            block_seq: 0,
         };
         // Load history without notifications.
         let _ = self.poll_transcript(&mut entry, false);
@@ -843,8 +846,13 @@ impl Engine {
         Ok(())
     }
 
-    pub async fn interrupt(&self, id: &str) -> ActionResult<()> {
+    /// Sends Esc. Refused while the agent waits on a prompt, where Esc would
+    /// deny it, unless `force`.
+    pub async fn interrupt(&self, id: &str, force: bool) -> ActionResult<()> {
         let (client, pane, _) = self.target(id)?;
+        if !force && self.fresh_status(&client, &pane).await? == "blocked" {
+            return Err(ActionError::new(409, "agent_blocked", "the agent is waiting for an answer: approve or deny it instead"));
+        }
         client.agent_send_keys(&pane, &["esc"]).await?;
         if let Some(entry) = self.state.lock().unwrap().agents.get_mut(id) {
             entry.interrupted_by_huntaway = true;
@@ -854,11 +862,12 @@ impl Engine {
 
     /// Picks option `number` of the menu on screen. With `text`, types it
     /// into the picked option (Claude's "Type something." answer) and submits.
-    pub async fn choose(&self, id: &str, number: u32, text: Option<&str>) -> ActionResult<Vec<String>> {
+    pub async fn choose(&self, id: &str, number: u32, text: Option<&str>, interaction: Option<&str>) -> ActionResult<Vec<String>> {
         let (client, pane, _) = self.target(id)?;
         if self.fresh_status(&client, &pane).await? != "blocked" {
-            return Err(ActionError::new(409, "already_resolved", "l'agent n'attend plus de réponse"));
+            return Err(ActionError::new(409, "already_resolved", "the agent is no longer waiting for an answer"));
         }
+        self.check_interaction(id, interaction)?;
         let screen = client.agent_read(&pane, ReadSource::Visible, None).await?;
         let options = numbered_options(&screen);
         let keys = keys_for_choice(&options, number)
@@ -876,11 +885,12 @@ impl Engine {
     }
 
     /// Rejects the pending prompt (Esc) and optionally explains why.
-    pub async fn deny(&self, id: &str, text: Option<&str>) -> ActionResult<()> {
+    pub async fn deny(&self, id: &str, text: Option<&str>, interaction: Option<&str>) -> ActionResult<()> {
         let (client, pane, _) = self.target(id)?;
         if self.fresh_status(&client, &pane).await? != "blocked" {
-            return Err(ActionError::new(409, "already_resolved", "l'agent n'attend plus de réponse"));
+            return Err(ActionError::new(409, "already_resolved", "the agent is no longer waiting for an answer"));
         }
+        self.check_interaction(id, interaction)?;
         client.agent_send_keys(&pane, &["esc"]).await?;
         self.mark_screen_stale(id);
         if let Some(text) = text.filter(|t| !t.trim().is_empty()) {
@@ -892,6 +902,17 @@ impl Engine {
                 }
             }
             self.send_message(id, text).await?;
+        }
+        Ok(())
+    }
+
+    /// Refuses an answer meant for another prompt than the one on screen.
+    fn check_interaction(&self, id: &str, expected: Option<&str>) -> ActionResult<()> {
+        let Some(expected) = expected else { return Ok(()) };
+        let state = self.state.lock().unwrap();
+        let current = state.agents.get(id).and_then(|e| e.view.interaction.as_ref()).map(|i| i.id.as_str());
+        if current != Some(expected) {
+            return Err(ActionError::new(409, "interaction_changed", "the agent is now asking something else"));
         }
         Ok(())
     }
@@ -1177,7 +1198,12 @@ fn recompute(entry: &mut AgentEntry) {
                     })
                 })
                 .unwrap_or_default();
+            if entry.view.interaction.is_none() {
+                entry.block_seq += 1;
+            }
+            let id = pending.as_ref().map(|p| p.tool_use_id.clone()).unwrap_or_else(|| format!("prompt-{}", entry.block_seq));
             Some(Interaction {
+                id,
                 reason,
                 tool: pending.map(|p| PendingToolView { tool_use_id: p.tool_use_id, name: p.name, summary: p.summary, input: p.input }),
                 questions,
@@ -1279,6 +1305,7 @@ fn build_notification(entry: &AgentEntry, kind: &str) -> Notification {
         kind: kind.to_string(),
         title,
         body: first_line(&format!("{project} · {detail}"), 180),
+        interaction_id: if kind == "blocked" { entry.view.interaction.as_ref().map(|i| i.id.clone()) } else { None },
     }
 }
 

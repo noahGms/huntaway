@@ -4,4 +4,8 @@ export type Notification = { id: string, agent_id: string,
 /**
  * `blocked`, `done` or `error`.
  */
-kind: string, title: string, body: string, };
+kind: string, title: string, body: string, 
+/**
+ * Prompt a `blocked` notification is about, to answer it from the notification.
+ */
+interaction_id: string | null, };

@@ -93,7 +93,7 @@ mod tests {
     use super::*;
 
     fn n(agent: &str, kind: &str, body: &str) -> Notification {
-        Notification { id: "x".into(), agent_id: agent.into(), kind: kind.into(), title: format!("{kind} title"), body: body.into() }
+        Notification { id: "x".into(), agent_id: agent.into(), kind: kind.into(), title: format!("{kind} title"), body: body.into(), interaction_id: None }
     }
 
     #[test]

@@ -268,6 +268,9 @@ pub struct PendingToolView {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct Interaction {
+    /// Identifies this prompt: answers carrying another id are refused.
+    #[serde(default)]
+    pub id: String,
     pub reason: BlockedReason,
     pub tool: Option<PendingToolView>,
     /// Structured questions from the transcript (AskUserQuestion).
@@ -416,6 +419,9 @@ pub struct MachineResponse {
     pub uptime_secs: Option<u64>,
     #[serde(default)]
     pub sessions: Vec<SessionView>,
+    /// Addresses the daemon listens on right now (`ip:port`).
+    #[serde(default)]
+    pub addresses: Vec<String>,
 }
 
 /// `GET /v1/state`.
@@ -441,6 +447,9 @@ pub struct Notification {
     pub kind: String,
     pub title: String,
     pub body: String,
+    /// Prompt a `blocked` notification is about, to answer it from the notification.
+    #[serde(default)]
+    pub interaction_id: Option<String>,
 }
 
 /// Event of the `/v1/stream` WebSocket.

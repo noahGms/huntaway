@@ -7,7 +7,11 @@ import type { ScreenOption } from "./ScreenOption";
 /**
  * What the agent is waiting for, shown as an approval/question card.
  */
-export type Interaction = { reason: BlockedReason, tool: PendingToolView | null, 
+export type Interaction = { 
+/**
+ * Identifies this prompt: answers carrying another id are refused.
+ */
+id: string, reason: BlockedReason, tool: PendingToolView | null, 
 /**
  * Structured questions from the transcript (AskUserQuestion).
  */

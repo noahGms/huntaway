@@ -6,6 +6,7 @@
 # Documents de travail : restent en local, jamais dans le dépôt.
 /PRD*.md
 /TODO*.md
+/UPDATE*.md
 /docs/
 /image.png
 /app/README.md

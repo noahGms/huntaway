@@ -6,4 +6,8 @@ import type { SessionView } from "./SessionView";
 /**
  * `GET /v1/machine`.
  */
-export type MachineResponse = { machine: MachineInfo, seq: number, device: DeviceInfo, uptime_secs: number | null, sessions: Array<SessionView>, };
+export type MachineResponse = { machine: MachineInfo, seq: number, device: DeviceInfo, uptime_secs: number | null, sessions: Array<SessionView>, 
+/**
+ * Addresses the daemon listens on right now (`ip:port`).
+ */
+addresses: Array<string>, };

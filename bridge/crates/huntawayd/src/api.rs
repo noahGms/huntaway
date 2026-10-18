@@ -250,9 +250,18 @@ async fn send_message(State(state): State<Shared>, auth: Auth, Path(id): Path<St
     Ok(Json(json!({ "ok": true })))
 }
 
-async fn interrupt(State(state): State<Shared>, auth: Auth, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+#[derive(Deserialize, Default)]
+struct InterruptBody {
+    /// Also when the agent waits on a prompt (Esc then denies it).
+    #[serde(default)]
+    force: bool,
+}
+
+async fn interrupt(State(state): State<Shared>, auth: Auth, Path(id): Path<String>, body: axum::body::Bytes) -> ApiResult<Json<Value>> {
     auth.require("agents.interrupt")?;
-    state.engine.interrupt(&id).await?;
+    // The body is optional: older clients post nothing.
+    let force = serde_json::from_slice::<InterruptBody>(&body).map(|b| b.force).unwrap_or_default();
+    state.engine.interrupt(&id, force).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -261,22 +270,25 @@ struct ChoiceBody {
     number: u32,
     /// Free-text answer typed into the chosen option.
     text: Option<String>,
+    /// `Interaction.id` the answer is meant for.
+    interaction_id: Option<String>,
 }
 
 async fn choice(State(state): State<Shared>, auth: Auth, Path(id): Path<String>, Json(body): Json<ChoiceBody>) -> ApiResult<Json<Value>> {
     auth.require("agents.approve")?;
-    let keys = state.engine.choose(&id, body.number, body.text.as_deref()).await?;
+    let keys = state.engine.choose(&id, body.number, body.text.as_deref(), body.interaction_id.as_deref()).await?;
     Ok(Json(json!({ "ok": true, "keys": keys })))
 }
 
 #[derive(Deserialize)]
 struct DenyBody {
     text: Option<String>,
+    interaction_id: Option<String>,
 }
 
 async fn deny(State(state): State<Shared>, auth: Auth, Path(id): Path<String>, Json(body): Json<DenyBody>) -> ApiResult<Json<Value>> {
     auth.require("agents.approve")?;
-    state.engine.deny(&id, body.text.as_deref()).await?;
+    state.engine.deny(&id, body.text.as_deref(), body.interaction_id.as_deref()).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
