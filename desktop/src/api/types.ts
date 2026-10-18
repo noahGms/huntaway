@@ -16,12 +16,17 @@ export type * from "./generated/MachineInfo";
 export type * from "./generated/MachineResponse";
 export type * from "./generated/Notification";
 export type * from "./generated/PendingToolView";
+export type * from "./generated/ProjectScripts";
+export type * from "./generated/ProjectShells";
 export type * from "./generated/Question";
 export type * from "./generated/QuestionOption";
 export type * from "./generated/RateLimits";
 export type * from "./generated/RateWindow";
 export type * from "./generated/ScreenOption";
+export type * from "./generated/ScriptSuggestion";
+export type * from "./generated/ScriptView";
 export type * from "./generated/SessionView";
+export type * from "./generated/ShellView";
 export type * from "./generated/StateSnapshot";
 export type * from "./generated/StoredItem";
 export type * from "./generated/TimelineItem";
@@ -94,6 +99,9 @@ export interface ApiError {
   code: string;
   message: string;
 }
+
+/** What a live terminal shows: an agent, or any pane (`<session>:<pane id>`: scripts, shells). */
+export type TerminalTarget = { agentId: string } | { pane: string };
 
 export type TerminalMessage =
   | { type: "screen"; ansi: string }

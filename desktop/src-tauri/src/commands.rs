@@ -191,13 +191,33 @@ pub enum TerminalMessage {
     Closed,
 }
 
+/// Key of a live terminal: the agent id, or `pane|<pane>` for a pane
+/// terminal (scripts, shells; `pane` is `<session>:<pane id>`).
+fn terminal_key(agent_id: &str, pane: Option<&str>) -> String {
+    match pane {
+        Some(pane) => format!("pane|{pane}"),
+        None => agent_id.to_string(),
+    }
+}
+
 #[tauri::command]
-pub async fn open_terminal(machines: State<'_, Shared>, machine_id: String, agent_id: String, on_event: Channel<TerminalMessage>) -> CmdResult<()> {
+pub async fn open_terminal(
+    machines: State<'_, Shared>,
+    machine_id: String,
+    agent_id: String,
+    pane: Option<String>,
+    on_event: Channel<TerminalMessage>,
+) -> CmdResult<()> {
     let client = machines.client(&machine_id).map_err(err)?;
-    let ticket = machines.begin_terminal(&machine_id, &agent_id);
-    let (handle, mut rx) = terminal::open(&client, &agent_id).await.map_err(|e| error_value(&e))?;
+    let key = terminal_key(&agent_id, pane.as_deref());
+    let ticket = machines.begin_terminal(&machine_id, &key);
+    let opened = match &pane {
+        Some(pane) => terminal::open_pane(&client, pane).await,
+        None => terminal::open(&client, &agent_id).await,
+    };
+    let (handle, mut rx) = opened.map_err(|e| error_value(&e))?;
     // Closed while it was opening: the handle is dropped, which closes it.
-    if !machines.set_terminal(&machine_id, &agent_id, ticket, handle) {
+    if !machines.set_terminal(&machine_id, &key, ticket, handle) {
         return Ok(());
     }
     tauri::async_runtime::spawn(async move {
@@ -219,13 +239,28 @@ pub async fn open_terminal(machines: State<'_, Shared>, machine_id: String, agen
 }
 
 #[tauri::command]
-pub fn close_terminal(machines: State<'_, Shared>, machine_id: String, agent_id: String) {
-    machines.close_terminal(&machine_id, &agent_id);
+pub fn close_terminal(machines: State<'_, Shared>, machine_id: String, agent_id: String, pane: Option<String>) {
+    machines.close_terminal(&machine_id, &terminal_key(&agent_id, pane.as_deref()));
 }
 
 #[tauri::command]
-pub fn terminal_input(machines: State<'_, Shared>, machine_id: String, agent_id: String, text: Option<String>, keys: Option<Vec<String>>) -> CmdResult<()> {
-    machines.terminal_input(&machine_id, &agent_id, TerminalInput { text, keys: keys.unwrap_or_default() }).map_err(err)
+pub fn terminal_input(
+    machines: State<'_, Shared>,
+    machine_id: String,
+    agent_id: String,
+    pane: Option<String>,
+    text: Option<String>,
+    keys: Option<Vec<String>>,
+) -> CmdResult<()> {
+    let key = terminal_key(&agent_id, pane.as_deref());
+    machines.terminal_input(&machine_id, &key, TerminalInput { text, keys: keys.unwrap_or_default() }).map_err(err)
+}
+
+/// Agents whose timeline the front end shows: only their `agent.item`
+/// events are streamed (`None` = every agent).
+#[tauri::command]
+pub fn set_stream_items(machines: State<'_, Shared>, machine_id: String, agent_ids: Option<Vec<String>>) -> CmdResult<()> {
+    machines.set_stream_items(&machine_id, agent_ids).map_err(err)
 }
 
 /// Sample approval notification (Settings → Test): the chosen action comes

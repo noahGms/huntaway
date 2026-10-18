@@ -573,7 +573,9 @@ pub struct ScriptView {
     pub cmd: String,
     /// Directory relative to the project (or absolute); `None` = the project root.
     pub cwd: Option<String>,
-    /// `file` (`.huntaway.toml`, wins on name conflicts) or `app` (stored by the daemon).
+    /// `file` (`.huntaway.toml`, wins on name conflicts), `app` (stored by
+    /// the daemon) or `removed` (no longer defined but still has its tab:
+    /// listed so it can be stopped).
     pub source: String,
     /// `running`, `exited` (its tab is still open, the command ended) or `stopped` (no tab).
     pub status: String,

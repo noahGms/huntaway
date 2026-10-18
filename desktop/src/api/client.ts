@@ -13,8 +13,13 @@ import type {
   MachineResponse,
   MachineView,
   PairPreview,
+  ProjectScripts,
+  ProjectShells,
+  ScriptView,
   Settings,
+  ShellView,
   TerminalMessage,
+  TerminalTarget,
   TimelinePage,
 } from "./types";
 
@@ -76,7 +81,22 @@ export const api = {
   gitStatus: (m: string, id: string) => api.get<GitStatus>(m, `/v1/agents/${seg(id)}/git/status`),
   gitDiff: (m: string, id: string, path?: string) =>
     api.get<{ diff: string }>(m, `/v1/agents/${seg(id)}/git/diff${query({ path })}`),
+
+  /** Scripts of the project at `path` (absolute; the answer has its canonical form). */
+  scripts: (m: string, path: string) => api.get<ProjectScripts>(m, `/v1/scripts${query({ path })}`),
+  startScript: (m: string, path: string, name: string) => api.post<{ script: ScriptView }>(m, "/v1/scripts/start", { path, name }),
+  stopScript: (m: string, path: string, name: string) => api.post(m, "/v1/scripts/stop", { path, name }),
+  restartScript: (m: string, path: string, name: string) => api.post<{ script: ScriptView }>(m, "/v1/scripts/restart", { path, name }),
+  /** Adds or replaces a script stored by the daemon (`rename_from`: its previous name). */
+  saveScript: (m: string, body: { path: string; name: string; cmd: string; cwd?: string; rename_from?: string }) =>
+    api.post<ProjectScripts>(m, "/v1/scripts", body),
+  deleteScript: (m: string, path: string, name: string) => api.post(m, "/v1/scripts/delete", { path, name }),
+  shells: (m: string, path: string) => api.get<ProjectShells>(m, `/v1/shells${query({ path })}`),
+  openShell: (m: string, path: string) => api.post<{ shell: ShellView }>(m, "/v1/shells", { path }),
+  closeShell: (m: string, pane: string) => api.post(m, "/v1/shells/close", { pane }),
 };
+
+const terminalArgs = (t: TerminalTarget) => ("pane" in t ? { agentId: "", pane: t.pane } : { agentId: t.agentId, pane: null });
 
 export const app = {
   listMachines: () => invoke<MachineView[]>("list_machines"),
@@ -94,13 +114,15 @@ export const app = {
   uploadFile: (machineId: string, path: string) => invoke<string>("upload_file", { machineId, path }),
   uploadData: (machineId: string, name: string, dataBase64: string) =>
     invoke<string>("upload_data", { machineId, name, dataBase64 }),
-  openTerminal: (machineId: string, agentId: string, onMessage: (m: TerminalMessage) => void) => {
+  openTerminal: (machineId: string, target: TerminalTarget, onMessage: (m: TerminalMessage) => void) => {
     const channel = new Channel<TerminalMessage>();
     channel.onmessage = onMessage;
-    return invoke<void>("open_terminal", { machineId, agentId, onEvent: channel });
+    return invoke<void>("open_terminal", { machineId, ...terminalArgs(target), onEvent: channel });
   },
   testNotification: () => invoke<void>("test_notification"),
-  closeTerminal: (machineId: string, agentId: string) => invoke<void>("close_terminal", { machineId, agentId }),
-  terminalInput: (machineId: string, agentId: string, input: { text?: string; keys?: string[] }) =>
-    invoke<void>("terminal_input", { machineId, agentId, text: input.text ?? null, keys: input.keys ?? null }),
+  closeTerminal: (machineId: string, target: TerminalTarget) => invoke<void>("close_terminal", { machineId, ...terminalArgs(target) }),
+  terminalInput: (machineId: string, target: TerminalTarget, input: { text?: string; keys?: string[] }) =>
+    invoke<void>("terminal_input", { machineId, ...terminalArgs(target), text: input.text ?? null, keys: input.keys ?? null }),
+  /** Streams `agent.item` events of these agents only (`null` = all). */
+  setStreamItems: (machineId: string, agentIds: string[] | null) => invoke<void>("set_stream_items", { machineId, agentIds }),
 };

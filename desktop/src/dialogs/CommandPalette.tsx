@@ -1,13 +1,15 @@
 import * as RD from "@radix-ui/react-dialog";
 import { Command } from "cmdk";
-import { Boxes, Clock, FolderGit2, Layers, PanelLeft, PanelRight, Plus, Server, Settings, Square, SquareTerminal } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Boxes, Clock, FolderGit2, Layers, PanelLeft, PanelRight, Play, Plus, RotateCw, Server, Settings, Square, SquareTerminal } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "../api/client";
 import { useConversations } from "../hooks/useConversations";
 import { AgentIcon, MachineDot, StatusDot } from "../components/ui/Status";
 import { compactAge, projectsOf, searchConversations, statusLabel } from "../lib/conversations";
 import { orderMachines } from "../lib/spaces";
-import { machineList, useMachines } from "../store/machines";
+import { openShell, scriptAction } from "../components/project/ProjectTools";
+import { can, machineList, useMachines } from "../store/machines";
+import { scriptsOf, scriptStatus, useProjects } from "../store/projects";
 import { usePrefs } from "../store/prefs";
 import { useUi } from "../store/ui";
 
@@ -17,6 +19,17 @@ const groupClass = "[&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:pb-1 
 
 /** Rows rendered per section: the search covers everything, the list stays light. */
 const LIMIT = 60;
+/** Projects whose scripts are fetched when the palette opens. */
+const SCRIPT_PROJECTS = 8;
+
+interface PaletteEntry {
+  id: string;
+  label: string;
+  hint: string;
+  keywords: string;
+  icon: React.ReactNode;
+  run: () => void;
+}
 
 const matches = (text: string, words: string[]) => {
   const t = text.toLowerCase();
@@ -74,6 +87,84 @@ export function CommandPalette() {
     const fav = new Set(favorites);
     return all.sort((a, b) => Number(fav.has(b.key)) - Number(fav.has(a.key)));
   }, [open, conversations, search, favorites]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Projects with a known directory, most recent first: their scripts and terminals.
+  const allMachines = useMachines((s) => s.machines);
+  const projectDirs = useMemo(() => {
+    if (!open) return [];
+    const dirs = new Map<string, { machineId: string; machineName: string; project: string; cwd: string }>();
+    for (const p of projectsOf(conversations)) {
+      const cwd = conversations.find((c) => c.machineId === p.machineId && c.project === p.project && c.cwd)?.cwd;
+      if (cwd) dirs.set(p.key, { machineId: p.machineId, machineName: p.machineName, project: p.project, cwd });
+    }
+    return [...dirs.values()];
+  }, [open, conversations]);
+  const projectsState = useProjects();
+  useEffect(() => {
+    if (!open) return;
+    const fav = new Set(favorites);
+    const wanted = [...projectDirs].sort((a, b) => Number(fav.has(`${b.machineId}|${b.project}`)) - Number(fav.has(`${a.machineId}|${a.project}`)));
+    for (const p of wanted.slice(0, SCRIPT_PROJECTS)) {
+      const m = allMachines[p.machineId];
+      if (m?.status.state !== "online" || !can(m, "scripts.read") || scriptsOf(useProjects.getState(), p.machineId, p.cwd)) continue;
+      void useProjects.getState().loadScripts(p.machineId, p.cwd);
+    }
+  }, [open, projectDirs]); // eslint-disable-line react-hooks/exhaustive-deps
+  const scriptEntries = useMemo(() => {
+    if (!open) return [];
+    const entries: PaletteEntry[] = [];
+    for (const p of projectDirs) {
+      const m = allMachines[p.machineId];
+      if (m?.status.state !== "online") continue;
+      const at = `${p.project} @ ${p.machineName}`;
+      const scripts = scriptsOf(projectsState, p.machineId, p.cwd);
+      const path = scripts?.path ?? p.cwd;
+      const toast = (text: string) => (ok: boolean) => ok && ui.toast(text, "success");
+      if (scripts && can(m, "scripts.run")) {
+        for (const sc of scripts.scripts) {
+          const id = `${p.machineId}|${path}|${sc.name}`;
+          const keywords = `script ${sc.name} ${sc.cmd} ${at}`;
+          if (scriptStatus(sc) === "running") {
+            entries.push({ id: `stop|${id}`, label: `Stop ${sc.name}`, hint: at, keywords: `stop ${keywords}`, icon: <Square size={15} />, run: () => void scriptAction(p.machineId, path, sc.name, "stop").then(toast(`Stopped ${sc.name}`)) });
+            entries.push({ id: `restart|${id}`, label: `Restart ${sc.name}`, hint: at, keywords: `restart ${keywords}`, icon: <RotateCw size={15} />, run: () => void scriptAction(p.machineId, path, sc.name, "restart").then(toast(`Restarted ${sc.name}`)) });
+          } else if (sc.source !== "removed") {
+            entries.push({ id: `start|${id}`, label: `Start ${sc.name}`, hint: at, keywords: `start run ${keywords}`, icon: <Play size={15} />, run: () => void scriptAction(p.machineId, path, sc.name, "start").then(toast(`Started ${sc.name}`)) });
+          }
+          if (sc.pane) {
+            const pane = sc.pane;
+            entries.push({
+              id: `logs|${id}`,
+              label: `Logs of ${sc.name}`,
+              hint: at,
+              keywords: `logs terminal output ${keywords}`,
+              icon: <SquareTerminal size={15} />,
+              run: () => {
+                ui.openProject(p.machineId, p.project);
+                useProjects.getState().openTerminal({ machineId: p.machineId, path, pane, kind: "script", title: sc.name });
+              },
+            });
+          }
+        }
+      }
+      if (can(m, "terminal.open")) {
+        entries.push({
+          id: `shell|${p.machineId}|${p.cwd}`,
+          label: "Open terminal",
+          hint: at,
+          keywords: `terminal shell console ${at}`,
+          icon: <SquareTerminal size={15} />,
+          run: () => {
+            ui.openProject(p.machineId, p.project);
+            void openShell(p.machineId, path, p.project);
+          },
+        });
+      }
+    }
+    return entries;
+  }, [open, projectDirs, projectsState, allMachines]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Without a search: running scripts first, a few rows only.
+  const shownScripts = words.length
+    ? scriptEntries.filter((e) => matches(`${e.label} ${e.keywords}`, words)).slice(0, LIMIT)
+    : [...scriptEntries.filter((e) => e.id.startsWith("stop|")), ...scriptEntries.filter((e) => e.id.startsWith("start|"))].slice(0, 6);
   const shownMachines = words.length ? machines.filter((m) => matches(`machine server ${m.record.name}`, words)) : machines;
   const shownGroups = words.length ? groups.filter((g) => matches(`group space ${g.name}`, words)) : groups;
   const goSpace = (space: Parameters<typeof setSpace>[0]) =>
@@ -117,6 +208,19 @@ export function CommandPalette() {
                   {shownActions.map((a) => (
                     <Command.Item key={a.id} value={`a-${a.id}`} onSelect={() => run(a.run)} className={itemClass}>
                       <span className="text-muted">{a.icon}</span> {a.label}
+                    </Command.Item>
+                  ))}
+                </Command.Group>
+              )}
+              {shownScripts.length > 0 && (
+                <Command.Group heading="Scripts & terminals" className={groupClass}>
+                  {shownScripts.map((e) => (
+                    <Command.Item key={e.id} value={`x-${e.id}`} onSelect={() => run(e.run)} className={itemClass}>
+                      <span className="text-muted">{e.icon}</span>
+                      <span className="min-w-0 flex-1 truncate">
+                        {e.label} <span className="text-faint">@ {e.hint.split(" @ ")[0]}</span>
+                      </span>
+                      <span className="max-w-[40%] truncate text-[11.5px] text-faint">{e.hint.split(" @ ")[1]}</span>
                     </Command.Item>
                   ))}
                 </Command.Group>

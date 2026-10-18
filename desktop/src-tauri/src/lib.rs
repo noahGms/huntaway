@@ -89,6 +89,7 @@ pub fn run() {
             commands::open_terminal,
             commands::close_terminal,
             commands::terminal_input,
+            commands::set_stream_items,
             commands::test_notification,
         ])
         .build(tauri::generate_context!())

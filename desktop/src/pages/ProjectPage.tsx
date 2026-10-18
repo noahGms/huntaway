@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Virtuoso } from "react-virtuoso";
 import { api } from "../api/client";
 import type { HistoryEntry } from "../api/types";
+import { ProjectTerminalPanel, ProjectTools } from "../components/project/ProjectTools";
 import { Button } from "../components/ui/Button";
 import { AgentIcon, StatusDot } from "../components/ui/Status";
 import { useConversations } from "../hooks/useConversations";
@@ -91,6 +92,7 @@ export function ProjectPage() {
         </span>
         {waiting > 0 && <span className="shrink-0 text-blocked">{waiting} waiting</span>}
       </div>
+      {cwd && <ProjectTools key={`${project.machineId}|${cwd}`} machineId={project.machineId} cwd={cwd} project={project.project} />}
       <div className="min-h-0 flex-1">
         {list.length === 0 ? (
           <p className="p-6 text-[13px] text-muted">No conversations.</p>
@@ -114,6 +116,7 @@ export function ProjectPage() {
           />
         )}
       </div>
+      {cwd && <ProjectTerminalPanel machineId={project.machineId} cwd={cwd} />}
     </div>
   );
 }

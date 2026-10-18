@@ -6,6 +6,7 @@ import { create } from "zustand";
 import { api, app } from "../api/client";
 import type { AgentView, Envelope, HistoryEntry, MachineStatus, MachineView, StateSnapshot, StoredItem, TimelinePage } from "../api/types";
 import { liveKey, parseKey } from "../lib/conversations";
+import { useProjects } from "./projects";
 
 export interface TimelineState {
   items: StoredItem[];
@@ -67,6 +68,25 @@ const reloadAfter = new Set<string>();
 const generation = new Map<string, number>();
 /** Timeline keys, least recently opened first. */
 const recent: string[] = [];
+/** Timelines reloaded once after a load because items were missing. */
+const gapRetried = new Set<string>();
+/** Item filter last sent per machine (sorted agent ids). */
+const sentItems = new Map<string, string>();
+
+/** Number of the last item of a timeline, -1 when empty. */
+const lastN = (tl: TimelineState) => (tl.items.length ? tl.items[tl.items.length - 1].n : -1);
+
+/** Live agents whose timeline is in memory, per machine (the others' items are not streamed). */
+export function streamedAgents(machineIds: string[], timelineKeys: string[]): Record<string, string[]> {
+  const byMachine: Record<string, string[]> = {};
+  for (const id of machineIds) byMachine[id] = [];
+  for (const key of timelineKeys) {
+    const k = parseKey(key);
+    if (k?.live && byMachine[k.machineId]) byMachine[k.machineId].push(k.id);
+  }
+  for (const ids of Object.values(byMachine)) ids.sort();
+  return byMachine;
+}
 
 /** Marks a timeline as opened (kept in memory over older ones). */
 export function touchTimeline(key: string) {
@@ -97,7 +117,8 @@ export const useMachines = create<MachinesState>((set, get) => {
           // Another agent took the pane (or `/clear`): its items are numbered from 0 again.
           resetTimeline(key);
           void get().loadTimeline(key);
-        } else if (tl?.loaded && tl.items.length === 0 && agent.item_count > 0) {
+        } else if (tl?.loaded && !tl.loading && lastN(tl) < agent.item_count - 1) {
+          // Items missing (not streamed while it was being opened, history attached late): fetch them.
           void get().loadTimeline(key);
         }
         break;
@@ -129,6 +150,10 @@ export const useMachines = create<MachinesState>((set, get) => {
         setMachine(machineId, (m) =>
           m.snapshot ? { ...m, snapshot: { ...m.snapshot, workspaces: (event.data as { workspaces: StateSnapshot["workspaces"] }).workspaces } } : m,
         );
+        break;
+      case "scripts.updated":
+      case "shells.updated":
+        useProjects.getState().onEvent(machineId, event);
         break;
       case "sessions.updated":
         setMachine(machineId, (m) =>
@@ -196,6 +221,7 @@ export const useMachines = create<MachinesState>((set, get) => {
             return;
           }
           setMachine(machine_id, (m) => ({ ...m, snapshot }));
+          useProjects.getState().reloadMachine(machine_id);
           // Events may have been missed: reload the open live timelines of this machine.
           for (const [key, tl] of Object.entries(get().timelines)) {
             const k = parseKey(key);
@@ -206,10 +232,33 @@ export const useMachines = create<MachinesState>((set, get) => {
           }
         }),
         listen<{ machine_id: string; event: Envelope }>("machine-event", (e) => onEvent(e.payload.machine_id, e.payload.event)),
-        listen("machines-changed", () => void get().refresh()),
+        listen("machines-changed", () => {
+          // Reconnected machines start with every item streamed: send the filter again.
+          sentItems.clear();
+          void get().refresh();
+        }),
       ]);
+      // Only the items of the timelines in memory are streamed. The filter
+      // is sent as soon as a timeline starts loading, before its first page
+      // is fetched; an item that still slips between the two is caught by
+      // the gap check (`item_count` of `agent.updated`).
+      const syncItems = () => {
+        const s = get();
+        for (const [machineId, ids] of Object.entries(streamedAgents(Object.keys(s.machines), Object.keys(s.timelines)))) {
+          const sig = ids.join(",");
+          if (sentItems.get(machineId) === sig) continue;
+          sentItems.set(machineId, sig);
+          void app.setStreamItems(machineId, ids).catch(() => sentItems.delete(machineId));
+        }
+      };
+      const unsubscribe = useMachines.subscribe((s, prev) => {
+        if (s.timelines !== prev.timelines || s.machines !== prev.machines) syncItems();
+      });
       await get().refresh();
-      return () => unlisten.forEach((u) => u());
+      return () => {
+        unsubscribe();
+        unlisten.forEach((u) => u());
+      };
     },
 
     async loadHistory(machineId) {
@@ -256,6 +305,15 @@ export const useMachines = create<MachinesState>((set, get) => {
           const hasMore = older ? page.has_more : keptOlder ? base.hasMore : page.has_more;
           return { timelines: { ...s.timelines, [key]: { items, hasMore, loading: false, loaded: true, error: null, instance } } };
         });
+        // Items emitted before the stream filter took effect: fetch them once.
+        const count = k.live ? get().agent(k.machineId, k.id)?.item_count : undefined;
+        const tl = get().timelines[key];
+        if (count !== undefined && tl && lastN(tl) < count - 1 && !gapRetried.has(key)) {
+          gapRetried.add(key);
+          reloadAfter.add(key);
+        } else {
+          gapRetried.delete(key);
+        }
       } catch (e) {
         if ((generation.get(key) ?? 0) !== gen) return;
         const live = buffered.get(key) ?? [];

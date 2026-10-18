@@ -47,9 +47,12 @@ struct Machine {
     status: MachineStatus,
     snapshot: Option<StateSnapshot>,
     stream: Option<StreamHandle>,
+    /// Live terminals by agent id (or `pane|<pane>` for pane terminals).
     terminals: HashMap<String, TerminalHandle>,
-    /// Terminal being opened per agent: a close in the meantime cancels it.
+    /// Terminal being opened per key: a close in the meantime cancels it.
     opening: HashMap<String, u64>,
+    /// Agents whose `agent.item` events the front end wants (`None` = all).
+    items: Option<Vec<String>>,
 }
 
 /// Conversation shown in the focused window: no notification for it.
@@ -194,8 +197,10 @@ impl Machines {
         // Also called from `setup`, on the main thread, outside the runtime.
         let runtime = tauri::async_runtime::handle();
         let _guard = runtime.inner().enter();
-        let (handle, mut rx) = stream::spawn(client.clone());
         let id = record.machine_id.clone();
+        // A reconnection keeps the item filter the front end set.
+        let items = self.inner.lock().unwrap().get(&id).and_then(|m| m.items.clone());
+        let (handle, mut rx) = stream::spawn_with_items(client.clone(), items.clone());
         let status = MachineStatus { state: "connecting".into(), ..Default::default() };
         let machine = Machine {
             record,
@@ -205,6 +210,7 @@ impl Machines {
             stream: Some(handle),
             terminals: HashMap::new(),
             opening: HashMap::new(),
+            items,
         };
         let known = self.inner.lock().unwrap().insert(id.clone(), machine).is_some();
         // A reconnection shows "connecting" right away; a new machine comes with `machines-changed`.
@@ -274,38 +280,49 @@ impl Machines {
     }
 
     /// Starts opening a terminal; returns the ticket `set_terminal` needs.
-    pub fn begin_terminal(&self, machine_id: &str, agent_id: &str) -> u64 {
+    pub fn begin_terminal(&self, machine_id: &str, key: &str) -> u64 {
         let ticket = self.terminal_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         if let Some(m) = self.inner.lock().unwrap().get_mut(machine_id) {
-            m.opening.insert(agent_id.to_string(), ticket);
+            m.opening.insert(key.to_string(), ticket);
         }
         ticket
     }
 
     /// Keeps an opened terminal, unless it was closed (or reopened) meanwhile:
     /// returns false and the handle is dropped, which closes it.
-    pub fn set_terminal(&self, machine_id: &str, agent_id: &str, ticket: u64, handle: TerminalHandle) -> bool {
+    pub fn set_terminal(&self, machine_id: &str, key: &str, ticket: u64, handle: TerminalHandle) -> bool {
         let mut inner = self.inner.lock().unwrap();
         let Some(m) = inner.get_mut(machine_id) else { return false };
-        if m.opening.get(agent_id) != Some(&ticket) {
+        if m.opening.get(key) != Some(&ticket) {
             return false;
         }
-        m.opening.remove(agent_id);
-        m.terminals.insert(agent_id.to_string(), handle);
+        m.opening.remove(key);
+        m.terminals.insert(key.to_string(), handle);
         true
     }
 
-    pub fn close_terminal(&self, machine_id: &str, agent_id: &str) {
+    pub fn close_terminal(&self, machine_id: &str, key: &str) {
         if let Some(m) = self.inner.lock().unwrap().get_mut(machine_id) {
-            m.opening.remove(agent_id);
-            m.terminals.remove(agent_id);
+            m.opening.remove(key);
+            m.terminals.remove(key);
         }
     }
 
-    pub fn terminal_input(&self, machine_id: &str, agent_id: &str, input: huntaway_client::terminal::TerminalInput) -> Result<(), String> {
+    pub fn terminal_input(&self, machine_id: &str, key: &str, input: huntaway_client::terminal::TerminalInput) -> Result<(), String> {
         let inner = self.inner.lock().unwrap();
-        let handle = inner.get(machine_id).and_then(|m| m.terminals.get(agent_id)).ok_or("terminal closed")?;
+        let handle = inner.get(machine_id).and_then(|m| m.terminals.get(key)).ok_or("terminal closed")?;
         handle.input.send(input).map_err(|_| "terminal closed".to_string())
+    }
+
+    /// Limits the `agent.item` events of a machine's stream to these agents.
+    pub fn set_stream_items(&self, machine_id: &str, agent_ids: Option<Vec<String>>) -> Result<(), String> {
+        let mut inner = self.inner.lock().unwrap();
+        let m = inner.get_mut(machine_id).ok_or("unknown machine")?;
+        if let Some(stream) = &m.stream {
+            stream.set_items(agent_ids.clone());
+        }
+        m.items = agent_ids;
+        Ok(())
     }
 
     // ------------------------------------------------------------- stream
