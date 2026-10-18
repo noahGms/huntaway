@@ -22,7 +22,7 @@ import { HistoryPage } from "./pages/HistoryPage";
 import { ProjectPage } from "./pages/ProjectPage";
 import { LocalDaemonCard, ServersPage } from "./pages/ServersPage";
 import { SettingsPage } from "./pages/SettingsPage";
-import { useMachines } from "./store/machines";
+import { START_TIMEOUT_MS, useMachines } from "./store/machines";
 import { useSettings } from "./store/settings";
 import { useUi } from "./store/ui";
 
@@ -127,14 +127,22 @@ export default function App() {
 }
 
 /** Selected conversation; archived ones not in the sidebar are fetched.
- * A live agent missing from the state is `pending` shortly after this app
- * created or resumed it, `failed` if it never showed up, else `gone`. */
+ * A live agent missing from the state is `pending` for a while after this
+ * app created or resumed it (or after it was selected without ever being
+ * seen: resumed from another page), `failed` if it never showed up, else
+ * `gone`. */
 function useSelectedConversation(conversations: Conversation[], selected: string | null): Conversation | "pending" | "failed" | "gone" | null {
   const [extra, setExtra] = useState<{ key: string; entry: HistoryEntry } | null>(null);
   const found = conversations.find((c) => c.key === selected);
   const k = selected ? parseKey(selected) : null;
   const machineState = useMachines((s) => (k ? s.machines[k.machineId]?.status.state : undefined));
-  const expected = useMachines((s) => (selected ? s.expected[selected] : undefined));
+  const created = useMachines((s) => (selected ? s.expected[selected] : undefined));
+  // Selected before it ever showed up: same grace delay from the selection.
+  const selectedAt = useRef<{ key: string | null; at: number }>({ key: null, at: 0 });
+  if (selectedAt.current.key !== selected) selectedAt.current = { key: selected, at: Date.now() };
+  const last = useRef<Conversation | null>(null);
+  const neverSeen = last.current?.key !== selected;
+  const expected = created ?? (neverSeen ? selectedAt.current.at + START_TIMEOUT_MS : undefined);
   const select = useUi((s) => s.select);
   const [, tick] = useState(0);
 
@@ -146,7 +154,6 @@ function useSelectedConversation(conversations: Conversation[], selected: string
   }, [found, expected]);
 
   // The agent on screen ended: its conversation is now in the history.
-  const last = useRef<Conversation | null>(null);
   useEffect(() => {
     if (found) {
       last.current = found;
@@ -175,7 +182,7 @@ function useSelectedConversation(conversations: Conversation[], selected: string
   if (!machine || !machineState) return null;
   if (!k.live) return extra?.key === selected ? fromHistory(machine, extra.entry) : null;
   if (expected && Date.now() < expected) return machineState === "online" ? "pending" : null;
-  return expected ? "failed" : "gone";
+  return created ? "failed" : "gone";
 }
 
 function Welcome() {
