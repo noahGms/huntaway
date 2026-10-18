@@ -24,7 +24,7 @@ fn check_path(path: &str) -> CmdResult<()> {
     if path.starts_with("/v1/") && !path.contains("://") {
         Ok(())
     } else {
-        Err(err(format!("chemin refusé : {path}")))
+        Err(err(format!("path refused: {path}")))
     }
 }
 
@@ -54,7 +54,7 @@ pub async fn api_post(machines: State<'_, Shared>, machine_id: String, path: Str
 pub async fn upload_file(machines: State<'_, Shared>, machine_id: String, path: String) -> CmdResult<String> {
     let client = machines.client(&machine_id).map_err(err)?;
     let bytes = tokio::fs::read(&path).await.map_err(|e| err(e.to_string()))?;
-    let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "fichier".into());
+    let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
     client.upload(&name, bytes).await.map_err(|e| error_value(&e))
 }
 
@@ -82,7 +82,7 @@ pub fn inspect_pairing(link: String) -> CmdResult<PairPreview> {
 }
 
 #[tauri::command]
-pub async fn pair_machine(machines: State<'_, Shared>, link: String) -> CmdResult<MachineRecord> {
+pub async fn pair_machine(app: tauri::AppHandle, machines: State<'_, Shared>, link: String) -> CmdResult<MachineRecord> {
     let payload = pairing::parse(&link).map_err(|e| err(e.to_string()))?;
     let mut saved = machines.storage.machines();
     if let Some(existing) = saved.iter().find(|r| r.machine_id == payload.machine_id) {
@@ -90,7 +90,7 @@ pub async fn pair_machine(machines: State<'_, Shared>, link: String) -> CmdResul
         if let Some(key) = &existing.public_key {
             let fp = base64::engine::general_purpose::STANDARD.decode(key).map(|k| pairing::fingerprint(&k)).unwrap_or_default();
             if fp != payload.fingerprint {
-                return Err(err("cette machine a changé d'identité : oublie-la d'abord dans Serveurs"));
+                return Err(err("this machine's identity changed: remove it in Servers first"));
             }
         }
     }
@@ -115,6 +115,8 @@ pub async fn pair_machine(machines: State<'_, Shared>, link: String) -> CmdResul
         machines.disconnect(&record.machine_id);
         machines.connect(record.clone(), paired.token);
     }
+    // Listed right away, before its first event.
+    app.emit("machines-changed", ()).ok();
     Ok(record)
 }
 
@@ -192,8 +194,12 @@ pub enum TerminalMessage {
 #[tauri::command]
 pub async fn open_terminal(machines: State<'_, Shared>, machine_id: String, agent_id: String, on_event: Channel<TerminalMessage>) -> CmdResult<()> {
     let client = machines.client(&machine_id).map_err(err)?;
+    let ticket = machines.begin_terminal(&machine_id, &agent_id);
     let (handle, mut rx) = terminal::open(&client, &agent_id).await.map_err(|e| error_value(&e))?;
-    machines.set_terminal(&machine_id, &agent_id, Some(handle));
+    // Closed while it was opening: the handle is dropped, which closes it.
+    if !machines.set_terminal(&machine_id, &agent_id, ticket, handle) {
+        return Ok(());
+    }
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             let msg = match event {
@@ -212,7 +218,7 @@ pub async fn open_terminal(machines: State<'_, Shared>, machine_id: String, agen
 
 #[tauri::command]
 pub fn close_terminal(machines: State<'_, Shared>, machine_id: String, agent_id: String) {
-    machines.set_terminal(&machine_id, &agent_id, None);
+    machines.close_terminal(&machine_id, &agent_id);
 }
 
 #[tauri::command]
@@ -220,7 +226,7 @@ pub fn terminal_input(machines: State<'_, Shared>, machine_id: String, agent_id:
     machines.terminal_input(&machine_id, &agent_id, TerminalInput { text, keys: keys.unwrap_or_default() }).map_err(err)
 }
 
-/// Sample approval notification (Settings → Tester): the chosen action comes
+/// Sample approval notification (Settings → Test): the chosen action comes
 /// back as a `notification-test` event instead of being sent to an agent.
 #[tauri::command]
 pub fn test_notification(app: tauri::AppHandle) {
@@ -233,8 +239,9 @@ pub fn test_notification(app: tauri::AppHandle) {
             id: "test".into(),
             agent_id: "test".into(),
             kind: "blocked".into(),
-            title: "Claude a besoin de toi".into(),
-            body: "Approbation : Bash npm test".into(),
+            title: "Claude needs you".into(),
+            body: "Approval: Bash npm test".into(),
+            interaction_id: Some("test".into()),
         },
         approve: Some(1),
         sound: true,

@@ -48,6 +48,8 @@ struct Machine {
     snapshot: Option<StateSnapshot>,
     _stream: Option<StreamHandle>,
     terminals: HashMap<String, TerminalHandle>,
+    /// Terminal being opened per agent: a close in the meantime cancels it.
+    opening: HashMap<String, u64>,
 }
 
 /// Conversation shown in the focused window: no notification for it.
@@ -65,6 +67,9 @@ pub struct Machines {
     pub settings: Mutex<Settings>,
     /// Main window focused: daemons skip phone pushes meanwhile.
     window_focused: std::sync::atomic::AtomicBool,
+    /// One local daemon lookup at a time (background loop, Start button).
+    local_lock: tokio::sync::Mutex<()>,
+    terminal_seq: std::sync::atomic::AtomicU64,
 }
 
 pub type Shared = Arc<Machines>;
@@ -79,6 +84,8 @@ impl Machines {
             focus: Mutex::new(Focus::default()),
             settings: Mutex::new(settings),
             window_focused: std::sync::atomic::AtomicBool::new(true),
+            local_lock: tokio::sync::Mutex::new(()),
+            terminal_seq: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -111,10 +118,22 @@ impl Machines {
         });
     }
 
-    pub fn set_window_focused(&self, focused: bool) {
+    pub fn set_window_focused(self: &Arc<Self>, focused: bool) {
         let before = self.window_focused.swap(focused, std::sync::atomic::Ordering::Relaxed);
         if before != focused {
             self.send_presence();
+            // Back from sleep or another app: don't wait for the backoff.
+            if focused {
+                self.reconnect_offline();
+            }
+        }
+    }
+
+    /// Reconnects every offline machine at once.
+    pub fn reconnect_offline(self: &Arc<Self>) {
+        let offline: Vec<String> = self.inner.lock().unwrap().values().filter(|m| m.status.state == "offline").map(|m| m.record.machine_id.clone()).collect();
+        for id in offline {
+            let _ = self.reconnect(&id);
         }
     }
 
@@ -132,6 +151,7 @@ impl Machines {
 
     /// Connects the local daemon when its token appears (or changes).
     pub async fn refresh_local(self: &Arc<Self>) -> bool {
+        let _lock = self.local_lock.lock().await;
         let Some(daemon) = local::detect() else { return false };
         let current = {
             let inner = self.inner.lock().unwrap();
@@ -174,15 +194,21 @@ impl Machines {
         let _guard = runtime.inner().enter();
         let (handle, mut rx) = stream::spawn(client.clone());
         let id = record.machine_id.clone();
+        let status = MachineStatus { state: "connecting".into(), ..Default::default() };
         let machine = Machine {
             record,
             client,
-            status: MachineStatus { state: "connecting".into(), ..Default::default() },
+            status: status.clone(),
             snapshot: None,
             _stream: Some(handle),
             terminals: HashMap::new(),
+            opening: HashMap::new(),
         };
-        self.inner.lock().unwrap().insert(id.clone(), machine);
+        let known = self.inner.lock().unwrap().insert(id.clone(), machine).is_some();
+        // A reconnection shows "connecting" right away; a new machine comes with `machines-changed`.
+        if known {
+            self.app.emit("machine-status", json!({ "machine_id": id, "status": status })).ok();
+        }
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
             while let Some(event) = rx.recv().await {
@@ -205,7 +231,7 @@ impl Machines {
             .unwrap()
             .get(machine_id)
             .map(|m| m.client.clone())
-            .ok_or_else(|| "machine inconnue".to_string())
+            .ok_or_else(|| "unknown machine".to_string())
     }
 
     pub fn views(&self) -> Vec<MachineView> {
@@ -220,7 +246,7 @@ impl Machines {
 
     pub fn rename(&self, machine_id: &str, name: &str) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
-        let machine = inner.get_mut(machine_id).ok_or("machine inconnue")?;
+        let machine = inner.get_mut(machine_id).ok_or("unknown machine")?;
         machine.record.name = name.to_string();
         if !machine.record.local {
             let mut saved = self.storage.machines();
@@ -236,32 +262,48 @@ impl Machines {
     pub fn reconnect(self: &Arc<Self>, machine_id: &str) -> Result<(), String> {
         let (record, token) = {
             let inner = self.inner.lock().unwrap();
-            let m = inner.get(machine_id).ok_or("machine inconnue")?;
+            let m = inner.get(machine_id).ok_or("unknown machine")?;
             (m.record.clone(), m.client.token().to_string())
         };
-        self.disconnect(machine_id);
+        // Replaces the old connection (dropped with its stream).
         self.connect(record, token);
+        self.update_badge();
         Ok(())
     }
 
-    pub fn set_terminal(&self, machine_id: &str, agent_id: &str, handle: Option<TerminalHandle>) {
+    /// Starts opening a terminal; returns the ticket `set_terminal` needs.
+    pub fn begin_terminal(&self, machine_id: &str, agent_id: &str) -> u64 {
+        let ticket = self.terminal_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if let Some(m) = self.inner.lock().unwrap().get_mut(machine_id) {
+            m.opening.insert(agent_id.to_string(), ticket);
+        }
+        ticket
+    }
+
+    /// Keeps an opened terminal, unless it was closed (or reopened) meanwhile:
+    /// returns false and the handle is dropped, which closes it.
+    pub fn set_terminal(&self, machine_id: &str, agent_id: &str, ticket: u64, handle: TerminalHandle) -> bool {
         let mut inner = self.inner.lock().unwrap();
-        if let Some(m) = inner.get_mut(machine_id) {
-            match handle {
-                Some(h) => {
-                    m.terminals.insert(agent_id.to_string(), h);
-                }
-                None => {
-                    m.terminals.remove(agent_id);
-                }
-            }
+        let Some(m) = inner.get_mut(machine_id) else { return false };
+        if m.opening.get(agent_id) != Some(&ticket) {
+            return false;
+        }
+        m.opening.remove(agent_id);
+        m.terminals.insert(agent_id.to_string(), handle);
+        true
+    }
+
+    pub fn close_terminal(&self, machine_id: &str, agent_id: &str) {
+        if let Some(m) = self.inner.lock().unwrap().get_mut(machine_id) {
+            m.opening.remove(agent_id);
+            m.terminals.remove(agent_id);
         }
     }
 
     pub fn terminal_input(&self, machine_id: &str, agent_id: &str, input: huntaway_client::terminal::TerminalInput) -> Result<(), String> {
         let inner = self.inner.lock().unwrap();
-        let handle = inner.get(machine_id).and_then(|m| m.terminals.get(agent_id)).ok_or("terminal fermé")?;
-        handle.input.send(input).map_err(|_| "terminal fermé".to_string())
+        let handle = inner.get(machine_id).and_then(|m| m.terminals.get(agent_id)).ok_or("terminal closed")?;
+        handle.input.send(input).map_err(|_| "terminal closed".to_string())
     }
 
     // ------------------------------------------------------------- stream
@@ -287,6 +329,7 @@ impl Machines {
                     m.status.error = None;
                     m.status.retry_in_ms = None;
                     status_changed = true;
+                    badge = true;
                 }
                 StreamEvent::Latency(ms) => {
                     m.status.latency_ms = Some(*ms);
@@ -298,9 +341,11 @@ impl Machines {
                     m.status.retry_in_ms = Some(retry_in.as_millis() as u64);
                     m.status.latency_ms = None;
                     status_changed = true;
+                    // Its agents no longer count as waiting.
+                    badge = true;
                 }
                 StreamEvent::Snapshot(snapshot) => {
-                    // A renamed machine keeps the name given in the app, unless it was never renamed.
+                    // The local machine follows the daemon's name; paired machines keep the one given in the app.
                     if m.record.local {
                         m.record.name = snapshot.machine.machine_name.clone();
                     }
@@ -312,8 +357,15 @@ impl Machines {
                     if envelope.kind == "notification" {
                         if let Ok(n) = serde_json::from_value::<Notification>(envelope.data.clone()) {
                             let agent = m.snapshot.as_ref().and_then(|s| s.agents.iter().find(|a| a.id == n.agent_id));
-                            let approve = if n.kind == "blocked" { crate::notify::approve_option(agent) } else { None };
+                            let approve = if n.kind == "blocked" { crate::notify::approve_option(agent, n.interaction_id.as_deref()) } else { None };
                             notification = Some((n, m.record.name.clone(), m.client.clone(), approve));
+                        }
+                    }
+                    if let Some(agent_id) = &envelope.agent_id {
+                        if envelope.kind == "agent.updated" || envelope.kind == "agent.removed" {
+                            let agent = m.snapshot.as_ref().and_then(|s| s.agents.iter().find(|a| &a.id == agent_id));
+                            let current = agent.filter(|a| a.attention.is_blocked()).and_then(|a| a.interaction.as_ref()).map(|i| i.id.as_str());
+                            crate::notify::dismiss_stale(&self.app, machine_id, agent_id, current);
                         }
                     }
                 }
@@ -357,7 +409,6 @@ impl Machines {
         if focused && focus.machine_id.as_deref() == Some(machine_id) && focus.agent_id.as_deref() == Some(n.agent_id.as_str()) {
             return;
         }
-        self.app.emit("notification-shown", json!({ "machine_id": machine_id, "notification": n })).ok();
         crate::notify::show(crate::notify::Pending {
             app: self.app.clone(),
             client,
@@ -370,12 +421,14 @@ impl Machines {
         });
     }
 
-    /// Agents waiting for the user, all machines.
+    /// Agents waiting for the user, on the machines online (the state of the
+    /// others is stale).
     pub fn blocked_count(&self) -> usize {
         self.inner
             .lock()
             .unwrap()
             .values()
+            .filter(|m| m.status.state == "online")
             .filter_map(|m| m.snapshot.as_ref())
             .flat_map(|s| s.agents.iter())
             .filter(|a| a.attention.is_blocked())
