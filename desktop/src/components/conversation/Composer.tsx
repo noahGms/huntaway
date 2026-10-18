@@ -3,7 +3,9 @@ import { ArrowUp, AtSign, FileText, Image as ImageIcon, Paperclip, Slash, Square
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { api, app, errorMessage } from "../../api/client";
 import type { AgentView, FileMatch } from "../../api/types";
+import { markSent, useStop } from "../../hooks/useStop";
 import { basename } from "../../lib/format";
+import { MOD } from "../../lib/keys";
 import { can, useMachines } from "../../store/machines";
 import { useSettings } from "../../store/settings";
 import { useUi } from "../../store/ui";
@@ -17,26 +19,46 @@ interface Attachment {
   image: boolean;
 }
 
-const QUICK_REPLIES = ["Continue", "Lance les tests", "Explique ce que tu viens de faire", "Fais un commit"];
+const QUICK_REPLIES = ["Continue", "Run the tests", "Explain what you just did", "Commit the changes"];
 
 const SLASH: Record<string, [string, string][]> = {
   claude: [
-    ["/compact", "Résumer le contexte"],
-    ["/clear", "Nouvelle conversation"],
-    ["/cost", "Coût de la session"],
-    ["/model", "Changer de modèle"],
-    ["/review", "Relire les changements"],
-    ["/init", "Créer CLAUDE.md"],
+    ["/compact", "Summarize the context"],
+    ["/clear", "New conversation"],
+    ["/cost", "Session cost"],
+    ["/model", "Change model"],
+    ["/review", "Review the changes"],
+    ["/init", "Create CLAUDE.md"],
   ],
   codex: [
-    ["/compact", "Résumer le contexte"],
-    ["/new", "Nouvelle conversation"],
-    ["/model", "Changer de modèle"],
-    ["/review", "Relire les changements"],
-    ["/diff", "Voir le diff"],
-    ["/status", "État de la session"],
+    ["/compact", "Summarize the context"],
+    ["/new", "New conversation"],
+    ["/model", "Change model"],
+    ["/review", "Review the changes"],
+    ["/diff", "Show the diff"],
+    ["/status", "Session status"],
   ],
 };
+
+/** Drafts survive restarts; old ones are dropped. */
+const DRAFT_PREFIX = "draft:";
+const DRAFT_MAX_AGE_MS = 14 * 86_400_000;
+
+function readDraft(key: string): string {
+  try {
+    const raw = localStorage.getItem(DRAFT_PREFIX + key);
+    if (!raw) return "";
+    const { text, at } = JSON.parse(raw) as { text: string; at: number };
+    return Date.now() - at < DRAFT_MAX_AGE_MS ? text : "";
+  } catch {
+    return "";
+  }
+}
+
+function writeDraft(key: string, text: string) {
+  if (text) localStorage.setItem(DRAFT_PREFIX + key, JSON.stringify({ text, at: Date.now() }));
+  else localStorage.removeItem(DRAFT_PREFIX + key);
+}
 
 function readAsBase64(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -53,67 +75,38 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
   const machine = useMachines((s) => s.machines[machineId]);
   const enterToSend = useSettings((s) => s.settings.enter_to_send);
   const toast = useUi((s) => s.toast);
-  const [text, setText] = useState("");
+  // Draft per conversation (the view is mounted again for another one).
+  const draftKey = `${machineId}:${agent.id}`;
+  const [text, setText] = useState(() => readDraft(draftKey));
   const [sending, setSending] = useState(false);
-  const [stopping, setStopping] = useState(false);
-  // Set on send: the agent's status turns "working" a moment later, and Stop
-  // must be available right away.
-  const [justSent, setJustSent] = useState(false);
+  const { canStop, stopping, stop } = useStop(machineId, agent);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [mention, setMention] = useState<{ query: string; start: number } | null>(null);
   const [matches, setMatches] = useState<FileMatch[]>([]);
   const [active, setActive] = useState(0);
+  // Esc closed the command popup: it stays closed until the text changes.
+  const [slashClosed, setSlashClosed] = useState<string | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const online = machine?.status.state === "online";
   const blocked = agent.attention.status === "blocked" && agent.attention.reason !== "explicit_question";
   const allowed = can(machine, "agents.message");
+  const canReadFiles = can(machine, "files.read");
   const disabledReason = !allowed
-    ? "Cet appareil ne peut pas envoyer de messages"
+    ? "This device can't send messages"
     : !online
-      ? "Machine hors ligne"
+      ? "Machine offline"
       : blocked
-        ? "Réponds d'abord à la demande ci-dessus"
+        ? "Answer the prompt above first"
         : null;
-  const slash = text.startsWith("/") && !text.includes(" ") && !text.includes("\n") ? (SLASH[agent.kind] ?? []).filter(([c]) => c.startsWith(text)) : [];
+  const slash =
+    text.startsWith("/") && !text.includes(" ") && !text.includes("\n") && slashClosed !== text ? (SLASH[agent.kind] ?? []).filter(([c]) => c.startsWith(text)) : [];
   const popup: { label: string; hint?: string; value: string; icon: React.ReactNode }[] = mention
     ? matches.map((m) => ({ label: m.path, value: m.path, icon: <FileText size={13} /> }))
     : slash.map(([c, hint]) => ({ label: c, hint, value: c, icon: <Slash size={13} /> }));
 
-  const status = agent.attention.status;
-  useEffect(() => {
-    if (!justSent) return;
-    const timer = setTimeout(() => setJustSent(false), 15_000);
-    return () => clearTimeout(timer);
-  }, [justSent]);
-  useEffect(() => {
-    if (status === "working") setJustSent(false);
-  }, [status]);
-  const canStop = (status === "working" || justSent) && online && can(machine, "agents.interrupt");
-
-  const stop = async () => {
-    setStopping(true);
-    try {
-      await api.interrupt(machineId, agent.id);
-      setJustSent(false);
-    } catch (e) {
-      toast(errorMessage(e), "error");
-    } finally {
-      setStopping(false);
-    }
-  };
-
-  // Draft per conversation.
-  const draftKey = `draft:${machineId}:${agent.id}`;
-  useEffect(() => {
-    setText(sessionStorage.getItem(draftKey) ?? "");
-    setAttachments([]);
-  }, [draftKey]);
-  useEffect(() => {
-    if (text) sessionStorage.setItem(draftKey, text);
-    else sessionStorage.removeItem(draftKey);
-  }, [text, draftKey]);
+  useEffect(() => writeDraft(draftKey, text), [text, draftKey]);
 
   // Auto height.
   useEffect(() => {
@@ -129,22 +122,28 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
   }, [agent.id, disabledReason]);
 
   // File search for @ mentions.
+  const mentionQuery = mention?.query ?? null;
   useEffect(() => {
-    if (!mention || !can(machine, "files.read")) {
+    if (mentionQuery === null || !canReadFiles) {
       setMatches([]);
       return;
     }
+    let alive = true;
     const timer = setTimeout(() => {
       api
-        .files(machineId, agent.id, mention.query)
+        .files(machineId, agent.id, mentionQuery)
         .then((r) => {
+          if (!alive) return;
           setMatches(r.files.slice(0, 12));
           setActive(0);
         })
-        .catch(() => setMatches([]));
+        .catch(() => alive && setMatches([]));
     }, 120);
-    return () => clearTimeout(timer);
-  }, [mention, machineId, agent.id, machine]);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [mentionQuery, machineId, agent.id, canReadFiles]);
 
   const upload = useCallback(
     async (name: string, run: () => Promise<string>) => {
@@ -155,23 +154,35 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
         setAttachments((a) => a.map((x) => (x === placeholder ? { ...x, path } : x)));
       } catch (e) {
         setAttachments((a) => a.filter((x) => x !== placeholder));
-        toast(`Envoi de ${name} impossible : ${errorMessage(e)}`, "error");
+        toast(`Couldn't upload ${name}: ${errorMessage(e)}`, "error");
       }
     },
     [toast],
   );
 
-  // Files dropped on the window.
+  // Files dropped on the window, for the conversation on screen. One
+  // listener per mount; the latest props are read through a ref.
+  const dropTarget = useRef({ machineId, disabled: !!disabledReason, upload });
+  dropTarget.current = { machineId, disabled: !!disabledReason, upload };
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let cancelled = false;
     void getCurrentWebview()
       .onDragDropEvent((event) => {
-        if (event.payload.type !== "drop" || disabledReason) return;
-        for (const path of event.payload.paths) void upload(basename(path), () => app.uploadFile(machineId, path));
+        const target = dropTarget.current;
+        if (event.payload.type !== "drop" || target.disabled) return;
+        for (const path of event.payload.paths) void target.upload(basename(path), () => app.uploadFile(target.machineId, path));
       })
-      .then((u) => (unlisten = u));
-    return () => unlisten?.();
-  }, [machineId, upload, disabledReason]);
+      .then((u) => {
+        // Unmounted before the listener was ready.
+        if (cancelled) u();
+        else unlisten = u;
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   const updateMention = (value: string, caret: number) => {
     const before = value.slice(0, caret);
@@ -196,14 +207,14 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
     const paths = attachments.filter((a) => a.path).map((a) => a.path!);
     if ((!body && !paths.length) || sending || disabledReason) return;
     if (attachments.some((a) => !a.path)) {
-      toast("Envoi des pièces jointes en cours…");
+      toast("Attachments are still uploading…");
       return;
     }
     const message = paths.length ? `${body}${body ? "\n\n" : ""}${paths.join(" ")}` : body;
     setSending(true);
     try {
       await api.sendMessage(machineId, agent.id, message);
-      setJustSent(true);
+      markSent(machineId, agent.id);
       if (!override) setText("");
       setAttachments([]);
       setMention(null);
@@ -226,13 +237,15 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
         setActive((a) => (a - 1 + popup.length) % popup.length);
         return;
       }
-      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && mention)) {
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing)) {
         e.preventDefault();
         pick(popup[active]?.value ?? popup[0].value);
         return;
       }
       if (e.key === "Escape") {
-        setMention(null);
+        e.preventDefault();
+        if (mention) setMention(null);
+        else setSlashClosed(text);
         return;
       }
     }
@@ -284,7 +297,7 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
               <span key={i} className="flex items-center gap-1.5 rounded-lg border border-border bg-bg px-2 py-1 text-[11.5px] text-muted">
                 {a.path ? a.image ? <ImageIcon size={12} /> : <FileText size={12} /> : <Spinner className="h-3 w-3" />}
                 <span className="max-w-[200px] truncate">{a.name}</span>
-                <button onClick={() => setAttachments((x) => x.filter((_, j) => j !== i))} className="text-faint hover:text-text" aria-label="Retirer">
+                <button onClick={() => setAttachments((x) => x.filter((_, j) => j !== i))} className="text-faint hover:text-text" aria-label="Remove">
                   <X size={11} />
                 </button>
               </span>
@@ -296,7 +309,7 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
           rows={1}
           value={text}
           disabled={!!disabledReason}
-          placeholder={disabledReason ?? "Écrire un message…  (@ fichier, / commande)"}
+          placeholder={disabledReason ?? "Message…  (@ file, / command)"}
           onChange={(e) => {
             setText(e.target.value);
             updateMention(e.target.value, e.target.selectionStart);
@@ -318,8 +331,8 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
             onClick={() => fileInput.current?.click()}
             disabled={!!disabledReason}
             className="rounded-lg p-1.5 text-faint hover:bg-surface-high hover:text-text disabled:opacity-40"
-            aria-label="Joindre un fichier"
-            title="Joindre un fichier (ou glisser-déposer, ou coller une image)"
+            aria-label="Attach a file"
+            title="Attach a file (or drop it, or paste an image)"
           >
             <Paperclip size={15} />
           </button>
@@ -331,10 +344,10 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
               updateMention(next, next.length);
               ref.current?.focus();
             }}
-            disabled={!!disabledReason || !can(machine, "files.read")}
+            disabled={!!disabledReason || !canReadFiles}
             className="rounded-lg p-1.5 text-faint hover:bg-surface-high hover:text-text disabled:opacity-40"
-            aria-label="Mentionner un fichier"
-            title="Mentionner un fichier"
+            aria-label="Mention a file"
+            title="Mention a file"
           >
             <AtSign size={15} />
           </button>
@@ -350,7 +363,7 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
           />
           <div className="flex-1" />
           {agent.model && (
-            <span className="mr-1 flex items-center gap-1.5 rounded-lg border border-border px-2 py-1 text-[11.5px] text-muted" title="Modèle utilisé par l'agent">
+            <span className="mr-1 flex items-center gap-1.5 rounded-lg border border-border px-2 py-1 text-[11.5px] text-muted" title="Model used by the agent">
               <AgentIcon kind={agent.kind} size={11} />
               {agent.model.replace(/^claude-/, "")}
             </span>
@@ -361,7 +374,7 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
               disabled={stopping}
               className="flex h-8 w-8 items-center justify-center rounded-[10px] bg-accent text-on-accent transition-opacity hover:bg-[#fff3e2] disabled:opacity-30"
               aria-label="Stop"
-              title="Interrompre l'agent (⌘.)"
+              title={`Stop the agent (${MOD}.)`}
             >
               {stopping ? <Spinner /> : <Square size={12} strokeWidth={0} fill="currentColor" />}
             </button>
@@ -370,8 +383,8 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
               onClick={() => void send()}
               disabled={!!disabledReason || sending || (!text.trim() && !attachments.length)}
               className="flex h-8 w-8 items-center justify-center rounded-[10px] bg-accent text-on-accent transition-opacity hover:bg-[#fff3e2] disabled:opacity-30"
-              aria-label="Envoyer"
-              title={enterToSend ? "Envoyer (Entrée)" : "Envoyer (⌘ Entrée)"}
+              aria-label="Send"
+              title={enterToSend ? "Send (Enter)" : `Send (${MOD} Enter)`}
             >
               {sending ? <Spinner /> : <ArrowUp size={16} strokeWidth={2.5} />}
             </button>

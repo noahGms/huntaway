@@ -1,13 +1,19 @@
+import { useState } from "react";
 import type { Diff } from "../../lib/diff";
+
+/** Lines rendered before a "show more" button (huge diffs are slow to draw). */
+const CHUNK = 400;
 
 /** Unified diff with line numbers (new side) and +/- colors. */
 export function DiffView({ diff, maxHeight = 360 }: { diff: Diff; maxHeight?: number }) {
+  const [shown, setShown] = useState(CHUNK);
+  const hidden = diff.lines.length - shown;
   let line = 0;
   return (
     <div className="selectable overflow-auto bg-[#121418] font-mono text-[12px] leading-[1.6]" style={{ maxHeight }}>
       <table className="w-full border-collapse">
         <tbody>
-          {diff.lines.map((l, i) => {
+          {diff.lines.slice(0, shown).map((l, i) => {
             if (l.type === "hunk") {
               return (
                 <tr key={i} className="bg-surface-high/50 text-faint">
@@ -32,6 +38,11 @@ export function DiffView({ diff, maxHeight = 360 }: { diff: Diff; maxHeight?: nu
           })}
         </tbody>
       </table>
+      {hidden > 0 && (
+        <button onClick={() => setShown((n) => n + CHUNK * 5)} className="w-full border-t border-border py-1.5 font-sans text-[11.5px] text-muted hover:text-text">
+          Show {Math.min(hidden, CHUNK * 5)} more lines ({hidden} hidden)
+        </button>
+      )}
     </div>
   );
 }

@@ -33,7 +33,7 @@ function Block({ who, kind, time, continued, children }: { who: "user" | "agent"
       <div className="w-8 shrink-0">
         {!continued &&
           (who === "user" ? (
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-user text-[11px] font-semibold text-accent">Toi</div>
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-user text-[11px] font-semibold text-accent">You</div>
           ) : (
             <div className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-surface">
               <AgentIcon kind={kind} size={15} />
@@ -43,7 +43,7 @@ function Block({ who, kind, time, continued, children }: { who: "user" | "agent"
       <div className="min-w-0 flex-1">
         {!continued && (
           <div className="mb-1 flex items-baseline gap-2">
-            <span className="text-[13px] font-semibold">{who === "user" ? "Vous" : agentLabel(kind)}</span>
+            <span className="text-[13px] font-semibold">{who === "user" ? "You" : agentLabel(kind)}</span>
             {time && <span className="text-[11.5px] text-faint">{clockTime(time)}</span>}
           </div>
         )}
@@ -120,7 +120,7 @@ export function RowView({ row, kind }: { row: Row; kind: string }) {
     case "question":
       return (
         <Block who="agent" kind={kind} time={row.item.timestamp} continued={row.continued}>
-          <Card icon={<MessageCircleQuestion size={15} />} title="Question" right={row.result && <span className="text-[11.5px] text-faint">répondue</span>}>
+          <Card icon={<MessageCircleQuestion size={15} />} title="Question" right={row.result && <span className="text-[11.5px] text-faint">answered</span>}>
             <div className="space-y-3 border-t border-border px-3.5 py-3">
               {row.item.questions.map((q, i) => (
                 <div key={i}>
@@ -150,7 +150,7 @@ export function RowView({ row, kind }: { row: Row; kind: string }) {
       return (
         <div className="flex items-center gap-3 px-6 pb-1 pt-5 text-[11px] text-faint">
           <span className="h-px flex-1 bg-border" />
-          <span>Tour terminé{row.item.duration_ms ? ` · ${duration(row.item.duration_ms)}` : ""}</span>
+          <span>Turn ended{row.item.duration_ms ? ` · ${duration(row.item.duration_ms)}` : ""}</span>
           <span className="h-px flex-1 bg-border" />
         </div>
       );
@@ -158,7 +158,7 @@ export function RowView({ row, kind }: { row: Row; kind: string }) {
       return (
         <div className="px-6 pt-4">
           <div className="rounded-xl border border-border bg-surface px-3.5 py-2.5">
-            <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-faint">Pendant ton absence</div>
+            <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-faint">While you were away</div>
             <Markdown text={row.item.text} />
           </div>
         </div>
@@ -174,9 +174,9 @@ function ToolGroup({ calls }: { calls: ToolCallItem[] }) {
   const searches = calls.filter((c) => c.kind === "search").length;
   const web = calls.filter((c) => c.kind === "web").length;
   const parts = [
-    reads && `a lu ${reads} fichier${reads > 1 ? "s" : ""}`,
-    searches && `${searches} recherche${searches > 1 ? "s" : ""}`,
-    web && `${web} requête${web > 1 ? "s" : ""} web`,
+    reads && `read ${reads} file${reads > 1 ? "s" : ""}`,
+    searches && `${searches} search${searches > 1 ? "es" : ""}`,
+    web && `${web} web request${web > 1 ? "s" : ""}`,
   ].filter(Boolean);
   const label = parts.join(", ");
   return (
@@ -190,7 +190,7 @@ function ToolGroup({ calls }: { calls: ToolCallItem[] }) {
         <div className="ml-5 mt-1 space-y-0.5 border-l border-border pl-3">
           {calls.map((c) => (
             <div key={c.n} className="selectable truncate font-mono text-[11.5px] text-faint" title={c.summary}>
-              {c.kind === "file_read" ? "lit" : c.kind === "web" ? "web" : "cherche"} {c.summary}
+              {c.kind === "file_read" ? "read" : c.kind === "web" ? "web" : "search"} {c.summary}
             </div>
           ))}
         </div>
@@ -213,18 +213,21 @@ function CommandLine({ call, result }: { call: ToolCallItem; result?: ToolResult
       </button>
       {open && result && (
         <div className={`selectable border-t border-border px-3 py-2 font-mono text-[11.5px] ${result.is_error ? "text-[#e59a98]" : "text-muted"}`}>
-          {result.summary || "(pas de sortie)"}
+          {result.summary || "(no output)"}
         </div>
       )}
     </div>
   );
 }
 
+/** Diffs longer than this start folded. */
+const OPEN_DIFF_MAX_LINES = 60;
+
 function FileCard({ call, result }: { call: ToolCallItem; result?: ToolResultItem }) {
-  const [open, setOpen] = useState(true);
   const [copied, setCopied] = useState(false);
   const focusFile = useUi((s) => s.focusFile);
   const diff = useMemo(() => (call.change ? changeDiff(call.change) : null), [call.change]);
+  const [open, setOpen] = useState(() => !diff || diff.lines.length <= OPEN_DIFF_MAX_LINES);
   const path = call.change?.path ?? call.summary;
   const created = call.change && call.change.old === null && !call.change.new.startsWith("*** Begin Patch");
   return (
@@ -237,7 +240,7 @@ function FileCard({ call, result }: { call: ToolCallItem; result?: ToolResultIte
             {shortPath(path, 4)}
           </span>
         </button>
-        {result?.rejected && <span className="text-[11px] text-blocked">refusé</span>}
+        {result?.rejected && <span className="text-[11px] text-blocked">denied</span>}
         {diff && (
           <span className="shrink-0 rounded-md bg-done/12 px-1.5 font-mono text-[11px] text-done">
             +{diff.additions}
@@ -251,18 +254,18 @@ function FileCard({ call, result }: { call: ToolCallItem; result?: ToolResultIte
             setTimeout(() => setCopied(false), 1200);
           }}
           className="rounded-md p-1 text-faint hover:bg-surface-high hover:text-text"
-          aria-label="Copier le contenu"
+          aria-label="Copy the content"
         >
           {copied ? <Check size={13} /> : <Copy size={13} />}
         </button>
         <button onClick={() => focusFile(path)} className="rounded-md px-1.5 py-0.5 text-[11px] text-faint hover:bg-surface-high hover:text-text">
-          Ouvrir
+          Open
         </button>
       </div>
       {open && diff && (
         <div className="border-t border-border">
           <DiffView diff={diff} maxHeight={320} />
-          {call.change?.truncated && <div className="border-t border-border px-3 py-1 text-[11px] text-faint">Contenu tronqué</div>}
+          {call.change?.truncated && <div className="border-t border-border px-3 py-1 text-[11px] text-faint">Content truncated</div>}
         </div>
       )}
     </div>
@@ -272,7 +275,7 @@ function FileCard({ call, result }: { call: ToolCallItem; result?: ToolResultIte
 function ToolLine({ call, result }: { call: ToolCallItem; result?: ToolResultItem }) {
   const icon =
     call.kind === "subagent" ? <Bot size={13} /> : call.kind === "plan" ? <ListChecks size={13} /> : call.kind === "todo" ? <ListChecks size={13} /> : <Wrench size={13} />;
-  const label = call.kind === "subagent" ? "Sous-agent" : call.kind === "plan" ? "Plan proposé" : call.name;
+  const label = call.kind === "subagent" ? "Subagent" : call.kind === "plan" ? "Proposed plan" : call.name;
   return (
     <div className="mt-1 flex items-center gap-2 text-[12.5px] text-muted" title={result?.summary}>
       {icon}
@@ -288,12 +291,12 @@ export function PlanCard({ todos, compact }: { todos: { content: string; status:
   if (compact) {
     return (
       <div className="mt-1 flex items-center gap-2 text-[12.5px] text-muted">
-        <ListChecks size={13} /> Plan mis à jour · {done}/{todos.length}
+        <ListChecks size={13} /> Plan updated · {done}/{todos.length}
       </div>
     );
   }
   return (
-    <Card icon={<ListChecks size={15} className={done === todos.length ? "text-done" : ""} />} title="Plan de mise en œuvre" right={<span className="text-[11.5px] text-faint">{done}/{todos.length}</span>}>
+    <Card icon={<ListChecks size={15} className={done === todos.length ? "text-done" : ""} />} title="Plan" right={<span className="text-[11.5px] text-faint">{done}/{todos.length}</span>}>
       <ul className="space-y-1.5 border-t border-border px-3.5 py-3">
         {todos.map((t, i) => (
           <li key={i} className="flex items-start gap-2.5 text-[13px]">
@@ -325,7 +328,7 @@ function Subagent({ items }: { items: StoredItem[] }) {
       <button onClick={() => setOpen(!open)} className="flex items-center gap-1.5 text-[12.5px] text-muted hover:text-text">
         <ChevronRight size={13} className={`transition-transform ${open ? "rotate-90" : ""}`} />
         <Bot size={13} />
-        Sous-agent · {calls} action{calls > 1 ? "s" : ""}
+        Subagent · {calls} action{calls > 1 ? "s" : ""}
       </button>
       {open && (
         <div className="ml-5 mt-1.5 space-y-1 border-l border-border pl-3">

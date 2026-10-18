@@ -1,3 +1,4 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Check, Copy } from "lucide-react";
 import { memo, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -50,7 +51,7 @@ export function CodeBlock({ code, lang, maxHeight = 420 }: { code: string; lang?
           setTimeout(() => setCopied(false), 1200);
         }}
         className="absolute right-2 top-1.5 rounded-md p-1 text-faint opacity-0 transition-opacity hover:bg-surface-high hover:text-text group-hover:opacity-100"
-        aria-label="Copier"
+        aria-label="Copy"
       >
         {copied ? <Check size={13} /> : <Copy size={13} />}
       </button>
@@ -77,8 +78,16 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
             return <>{children}</>;
           },
           a({ href, children }) {
+            // The webview doesn't open new windows: links go to the system browser.
             return (
-              <a href={href} target="_blank" rel="noreferrer">
+              <a
+                href={href}
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (href && /^(https?|mailto):/i.test(href)) void openUrl(href).catch(() => {});
+                }}
+                title={href}
+              >
                 {children}
               </a>
             );
