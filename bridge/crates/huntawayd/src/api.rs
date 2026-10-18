@@ -28,6 +28,7 @@ pub struct AppState {
     pub history: HistoryIndex,
     pub presence: Arc<crate::presence::Presence>,
     pub listeners: Arc<crate::listen::Listeners>,
+    pub runner: Arc<crate::runner::Runner>,
 }
 
 type Shared = Arc<AppState>;
@@ -61,6 +62,14 @@ pub fn router(state: Shared) -> Router {
         .route("/v1/push", post(register_push))
         .route("/v1/presence", post(presence))
         .route("/v1/metrics", get(metrics))
+        .route("/v1/scripts", get(list_scripts).post(save_script))
+        .route("/v1/scripts/delete", post(delete_script))
+        .route("/v1/scripts/start", post(start_script))
+        .route("/v1/scripts/stop", post(stop_script))
+        .route("/v1/scripts/restart", post(restart_script))
+        .route("/v1/shells", get(list_shells).post(open_shell))
+        .route("/v1/shells/close", post(close_shell))
+        .route("/v1/panes/{pane}/terminal", get(pane_terminal))
         .route("/v1/stream", get(stream))
         .with_state(state)
 }
@@ -536,6 +545,96 @@ async fn presence(State(state): State<Shared>, auth: Auth, Json(body): Json<Pres
     Ok(Json(json!({ "ok": true, "ttl_secs": crate::presence::PRESENCE_TTL.as_secs() })))
 }
 
+// -------------------------------------------------------------- scripts
+
+#[derive(Deserialize)]
+struct PathQuery {
+    path: String,
+}
+
+async fn list_scripts(State(state): State<Shared>, auth: Auth, Query(q): Query<PathQuery>) -> ApiResult<Json<Value>> {
+    auth.require("scripts.read")?;
+    let runner = state.runner.clone();
+    let scripts = tokio::task::spawn_blocking(move || runner.scripts(&q.path)).await.map_err(|e| anyhow::anyhow!(e))??;
+    Ok(Json(serde_json::to_value(scripts).unwrap()))
+}
+
+#[derive(Deserialize)]
+struct SaveScriptBody {
+    path: String,
+    name: String,
+    cmd: String,
+    cwd: Option<String>,
+    /// Previous name, when the script is renamed.
+    rename_from: Option<String>,
+}
+
+/// Adds or replaces a script stored by the daemon (any command: `scripts.edit`).
+async fn save_script(State(state): State<Shared>, auth: Auth, Json(b): Json<SaveScriptBody>) -> ApiResult<Json<Value>> {
+    auth.require("scripts.edit")?;
+    let scripts = state.runner.save(&b.path, &b.name, &b.cmd, b.cwd.as_deref(), b.rename_from.as_deref())?;
+    Ok(Json(serde_json::to_value(scripts).unwrap()))
+}
+
+#[derive(Deserialize)]
+struct ScriptBody {
+    path: String,
+    name: String,
+}
+
+async fn delete_script(State(state): State<Shared>, auth: Auth, Json(b): Json<ScriptBody>) -> ApiResult<Json<Value>> {
+    auth.require("scripts.edit")?;
+    state.runner.delete(&b.path, &b.name)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn start_script(State(state): State<Shared>, auth: Auth, Json(b): Json<ScriptBody>) -> ApiResult<Json<Value>> {
+    auth.require("scripts.run")?;
+    let script = state.runner.start_script(&b.path, &b.name).await?;
+    Ok(Json(json!({ "ok": true, "script": script })))
+}
+
+async fn stop_script(State(state): State<Shared>, auth: Auth, Json(b): Json<ScriptBody>) -> ApiResult<Json<Value>> {
+    auth.require("scripts.run")?;
+    state.runner.stop_script(&b.path, &b.name).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn restart_script(State(state): State<Shared>, auth: Auth, Json(b): Json<ScriptBody>) -> ApiResult<Json<Value>> {
+    auth.require("scripts.run")?;
+    let script = state.runner.restart_script(&b.path, &b.name).await?;
+    Ok(Json(json!({ "ok": true, "script": script })))
+}
+
+async fn list_shells(State(state): State<Shared>, auth: Auth, Query(q): Query<PathQuery>) -> ApiResult<Json<Value>> {
+    auth.require("terminal.read")?;
+    Ok(Json(serde_json::to_value(state.runner.shells(&q.path)?).unwrap()))
+}
+
+#[derive(Deserialize)]
+struct OpenShellBody {
+    path: String,
+}
+
+/// Opens a shell tab in the project (`terminal.open`); typing into it
+/// through the pane terminal also needs `agents.input`.
+async fn open_shell(State(state): State<Shared>, auth: Auth, Json(b): Json<OpenShellBody>) -> ApiResult<Json<Value>> {
+    auth.require("terminal.open")?;
+    let shell = state.runner.open_shell(&b.path).await?;
+    Ok(Json(json!({ "ok": true, "shell": shell })))
+}
+
+#[derive(Deserialize)]
+struct CloseShellBody {
+    pane: String,
+}
+
+async fn close_shell(State(state): State<Shared>, auth: Auth, Json(b): Json<CloseShellBody>) -> ApiResult<Json<Value>> {
+    auth.require("terminal.open")?;
+    state.runner.close_shell(&b.pane).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 // ----------------------------------------------------------------- websocket
 
 #[derive(Deserialize)]
@@ -652,6 +751,33 @@ async fn serve_stream(socket: WebSocket, state: Shared, q: StreamQuery) {
 
 const TERMINAL_REFRESH: Duration = Duration::from_millis(250);
 
+/// What a terminal WebSocket shows: an agent, or any pane by
+/// `<session>:<pane id>` (scripts, shells).
+enum TerminalTarget {
+    Agent(String),
+    Pane { session: String, pane: String },
+}
+
+impl TerminalTarget {
+    /// The screen with ANSI colors, plus the plain text for agents.
+    async fn screen(&self, state: &AppState) -> Result<(String, Value), ActionError> {
+        match self {
+            TerminalTarget::Agent(id) => {
+                let screen = state.engine.screen(id, None, true).await?;
+                Ok((screen["ansi"].as_str().unwrap_or_default().to_string(), screen["text"].clone()))
+            }
+            TerminalTarget::Pane { session, pane } => Ok((state.engine.pane_screen(session, pane).await?, Value::Null)),
+        }
+    }
+
+    async fn input(&self, state: &AppState, body: &InputBody) -> Result<(), ActionError> {
+        match self {
+            TerminalTarget::Agent(id) => state.engine.input(id, body.text.as_deref(), &body.keys).await,
+            TerminalTarget::Pane { session, pane } => state.engine.pane_input(session, pane, body.text.as_deref(), &body.keys).await,
+        }
+    }
+}
+
 /// Live view of an agent's pane: Herdr has no output stream, so the screen
 /// is read a few times per second and sent when it changes. Client messages
 /// `{"text"?, "keys"?}` are typed into the pane (permission `agents.input`).
@@ -659,10 +785,26 @@ async fn terminal(State(state): State<Shared>, auth: Auth, Path(id): Path<String
     auth.require("terminal.read")?;
     state.engine.agent(&id).ok_or_else(ApiError::not_found)?;
     let can_input = auth.0.can("agents.input");
-    Ok(ws.on_upgrade(move |socket| serve_terminal(socket, state, id, can_input)))
+    Ok(ws.on_upgrade(move |socket| serve_terminal(socket, state, TerminalTarget::Agent(id), can_input)))
 }
 
-async fn serve_terminal(socket: WebSocket, state: Shared, id: String, can_input: bool) {
+/// Same protocol for any pane of a live Herdr session: `pane` is
+/// `<session>:<pane id>` (the `pane` of a script or shell). Screens carry
+/// `ansi` only (`text` is null).
+async fn pane_terminal(State(state): State<Shared>, auth: Auth, Path(pane): Path<String>, ws: WebSocketUpgrade) -> ApiResult<Response> {
+    auth.require("terminal.read")?;
+    let (session, pane_id) = pane
+        .split_once(':')
+        .filter(|(s, p)| !s.is_empty() && !p.is_empty())
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_pane", "expected <session>:<pane id>"))?;
+    let target = TerminalTarget::Pane { session: session.to_string(), pane: pane_id.to_string() };
+    // Fail before the upgrade when the pane does not exist.
+    target.screen(&state).await?;
+    let can_input = auth.0.can("agents.input");
+    Ok(ws.on_upgrade(move |socket| serve_terminal(socket, state, target, can_input)))
+}
+
+async fn serve_terminal(socket: WebSocket, state: Shared, target: TerminalTarget, can_input: bool) {
     let (mut tx, mut rx) = socket.split();
     let mut last = String::new();
     let mut refresh = tokio::time::interval(TERMINAL_REFRESH);
@@ -670,7 +812,7 @@ async fn serve_terminal(socket: WebSocket, state: Shared, id: String, can_input:
     loop {
         tokio::select! {
             _ = refresh.tick() => {
-                let screen = match state.engine.screen(&id, None, true).await {
+                let (ansi, text) = match target.screen(&state).await {
                     Ok(v) => v,
                     Err(e) => {
                         let msg = json!({ "type": "error", "code": e.code, "message": e.message });
@@ -678,9 +820,8 @@ async fn serve_terminal(socket: WebSocket, state: Shared, id: String, can_input:
                         return;
                     }
                 };
-                let ansi = screen["ansi"].as_str().unwrap_or_default().to_string();
                 if ansi != last {
-                    let msg = json!({ "type": "screen", "ansi": ansi, "text": screen["text"] });
+                    let msg = json!({ "type": "screen", "ansi": ansi, "text": text });
                     last = ansi;
                     if tx.send(Message::Text(msg.to_string().into())).await.is_err() {
                         return;
@@ -700,7 +841,7 @@ async fn serve_terminal(socket: WebSocket, state: Shared, id: String, can_input:
                         continue;
                     }
                     let Ok(body) = serde_json::from_str::<InputBody>(&text) else { continue };
-                    if let Err(e) = state.engine.input(&id, body.text.as_deref(), &body.keys).await {
+                    if let Err(e) = target.input(&state, &body).await {
                         let msg = json!({ "type": "error", "code": e.code, "message": e.message });
                         let _ = tx.send(Message::Text(msg.to_string().into())).await;
                     }

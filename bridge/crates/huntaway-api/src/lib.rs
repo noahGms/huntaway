@@ -23,6 +23,10 @@ pub const ALL_PERMISSIONS: &[&str] = &[
     "terminal.read",
     "history.read",
     "files.read",
+    "scripts.read",
+    "scripts.run",
+    "scripts.edit",
+    "terminal.open",
 ];
 
 // ------------------------------------------------------------------ timeline
@@ -556,6 +560,73 @@ pub struct GitStatus {
 pub struct UploadResponse {
     /// Absolute path on the machine, to put in a message.
     pub path: String,
+}
+
+// ------------------------------------------------------------------ scripts
+
+/// A project script (`GET /v1/scripts`): defined in the project's
+/// `.huntaway.toml` or added from the app, run in its own Herdr tab.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ScriptView {
+    pub name: String,
+    pub cmd: String,
+    /// Directory relative to the project (or absolute); `None` = the project root.
+    pub cwd: Option<String>,
+    /// `file` (`.huntaway.toml`, wins on name conflicts) or `app` (stored by the daemon).
+    pub source: String,
+    /// `running`, `exited` (its tab is still open, the command ended) or `stopped` (no tab).
+    pub status: String,
+    /// `<session>:<pane id>` of its tab while it has one: target of
+    /// `/v1/panes/{pane}/terminal`.
+    pub pane: Option<String>,
+}
+
+/// A script found in the project files that can be added in one click.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ScriptSuggestion {
+    pub name: String,
+    pub cmd: String,
+    pub cwd: Option<String>,
+    /// Where it was found: `package.json`, `Makefile`, `docker-compose`, `Cargo.toml`.
+    pub origin: String,
+}
+
+/// `GET /v1/scripts?path=` and the `scripts.updated` event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ProjectScripts {
+    /// Canonical project directory: compare event paths with this one.
+    pub path: String,
+    pub scripts: Vec<ScriptView>,
+    /// Only in `GET` answers (empty in events).
+    #[serde(default)]
+    pub suggestions: Vec<ScriptSuggestion>,
+    /// `.huntaway.toml` exists but could not be read.
+    #[serde(default)]
+    pub file_error: Option<String>,
+}
+
+/// A shell opened in a project from the app (`/v1/shells`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ShellView {
+    /// `<session>:<pane id>`: target of `/v1/panes/{pane}/terminal`.
+    pub pane: String,
+    pub path: String,
+    /// Seconds since the epoch.
+    pub opened_at: u64,
+    /// A command runs in it (else the shell waits at its prompt).
+    pub busy: bool,
+}
+
+/// `GET /v1/shells?path=` and the `shells.updated` event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ProjectShells {
+    pub path: String,
+    pub shells: Vec<ShellView>,
 }
 
 // ------------------------------------------------------------------- pairing

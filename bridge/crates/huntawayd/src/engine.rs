@@ -160,6 +160,7 @@ impl From<herdr_client::Error> for ActionError {
         match e.code() {
             Some("agent_blocked") => Self::new(409, "agent_blocked", "the agent is waiting for an answer"),
             Some("not_found") => Self::not_found(),
+            Some("pane_not_found" | "tab_not_found" | "workspace_not_found") => Self::new(404, "not_found", e.to_string()),
             _ => Self::new(502, "herdr_error", e.to_string()),
         }
     }
@@ -303,7 +304,7 @@ impl Engine {
 
     // ------------------------------------------------------------- events
 
-    fn emit(&self, kind: &str, agent_id: Option<&str>, data: Value) {
+    pub(crate) fn emit(&self, kind: &str, agent_id: Option<&str>, data: Value) {
         let envelope = Envelope {
             seq: self.seq.fetch_add(1, Ordering::SeqCst) + 1,
             at: now_ms(),
@@ -1131,8 +1132,41 @@ impl Engine {
         Ok(json!({ "text": text, "ansi": colored, "options": numbered_options(&text) }))
     }
 
+    /// Screen of any pane of a live session, with ANSI colors (pane terminal).
+    pub async fn pane_screen(&self, session: &str, pane: &str) -> ActionResult<String> {
+        let client = self.session_client(session)?;
+        Ok(client.pane_read(pane, ReadSource::Visible, None, true).await?)
+    }
+
+    /// Raw input into any pane of a live session (permission `agents.input`).
+    pub async fn pane_input(&self, session: &str, pane: &str, text: Option<&str>, keys: &[String]) -> ActionResult<()> {
+        let client = self.session_client(session)?;
+        if let Some(text) = text {
+            client.pane_send_text(pane, text).await?;
+        }
+        if !keys.is_empty() {
+            let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+            client.pane_send_keys(pane, &refs).await?;
+        }
+        Ok(())
+    }
+
+    /// Live Herdr sessions, `default` first.
+    pub fn session_names(&self) -> Vec<String> {
+        let state = self.state.lock().unwrap();
+        let mut names: Vec<String> = state.sessions.keys().cloned().collect();
+        names.sort_by_key(|n| n != "default");
+        names
+    }
+
+    /// Workspace (session, id) of an agent working in `cwd`.
+    pub fn agent_workspace(&self, cwd: &str) -> Option<(String, String)> {
+        let state = self.state.lock().unwrap();
+        state.agents.values().find(|a| a.view.cwd.as_deref() == Some(cwd)).map(|a| (a.view.session.clone(), a.view.workspace_id.clone()))
+    }
+
     /// Herdr client of a live session.
-    fn session_client(&self, session: &str) -> ActionResult<Client> {
+    pub(crate) fn session_client(&self, session: &str) -> ActionResult<Client> {
         let client = {
             let state = self.state.lock().unwrap();
             if !state.sessions.contains_key(session) {

@@ -12,6 +12,8 @@ mod history;
 mod listen;
 mod presence;
 mod push;
+mod runner;
+mod scripts;
 mod service;
 
 use std::net::{SocketAddr, TcpStream};
@@ -41,7 +43,7 @@ enum Command {
     Run,
     /// Show a QR code to pair a phone (code valid 5 minutes).
     Pair {
-        /// Also grant raw input and agent creation.
+        /// Also grant raw input, agent creation, script editing and shells.
         #[arg(long, conflicts_with = "read_only")]
         full: bool,
         /// Observer device: read only, no messages or approvals.
@@ -117,6 +119,8 @@ async fn run() -> Result<()> {
     engine.start();
     let presence = Arc::new(presence::Presence::default());
     // One store for the whole daemon: device writes are serialized in memory.
+    let runner = runner::Runner::new(engine.clone(), &dir);
+    runner.start();
     let store = Store::new(dir);
     tokio::spawn(push::run(notifications, store.clone(), identity.machine_id.clone(), presence.clone()));
 
@@ -125,7 +129,7 @@ async fn run() -> Result<()> {
         warn!(error = %e, "local token not created: the desktop app will need pairing");
     }
     let listeners = Arc::new(listen::Listeners::default());
-    let state = Arc::new(api::AppState { engine, store, identity, history: Default::default(), presence, listeners: listeners.clone() });
+    let state = Arc::new(api::AppState { engine, store, identity, history: Default::default(), presence, listeners: listeners.clone(), runner });
     let app = api::router(state).into_make_service_with_connect_info::<SocketAddr>();
     listen::run(listeners, listen_config, app).await
 }

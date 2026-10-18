@@ -37,10 +37,12 @@ pub const DEFAULT_PERMISSIONS: &[&str] = &[
     "terminal.read",
     "history.read",
     "files.read",
+    "scripts.read",
+    "scripts.run",
 ];
 
 /// Observer device: sees everything, acts on nothing (`huntawayd pair --read-only`).
-pub const READ_ONLY_PERMISSIONS: &[&str] = &["projects.read", "agents.read", "terminal.read", "history.read"];
+pub const READ_ONLY_PERMISSIONS: &[&str] = &["projects.read", "agents.read", "terminal.read", "history.read", "scripts.read"];
 
 /// Name of the device created for desktop apps on this machine.
 pub const LOCAL_DEVICE_NAME: &str = "Desktop local";
@@ -395,6 +397,9 @@ mod tests {
         assert_eq!(found.id, device.id);
         assert!(found.can("agents.approve"));
         assert!(!found.can("agents.input"));
+        // Running the project's scripts is default; defining commands or opening shells is not.
+        assert!(found.can("scripts.run"));
+        assert!(!found.can("scripts.edit") && !found.can("terminal.open"));
         assert!(store.authenticate("wrong").unwrap().is_none());
         assert!(store.revoke(&device.id).unwrap());
         assert!(store.authenticate(&token).unwrap().is_none());
