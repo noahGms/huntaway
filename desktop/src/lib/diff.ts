@@ -47,7 +47,19 @@ export function isPatch(text: string): boolean {
   return text.startsWith("*** Begin Patch") || text.startsWith("diff --git") || /^@@ .* @@/m.test(text.slice(0, 400));
 }
 
+// Diffs are computed once per change (timeline items are kept as they are).
+const cache = new WeakMap<FileChange, Diff>();
+
 export function changeDiff(change: FileChange): Diff {
+  let diff = cache.get(change);
+  if (!diff) {
+    diff = computeDiff(change);
+    cache.set(change, diff);
+  }
+  return diff;
+}
+
+function computeDiff(change: FileChange): Diff {
   if (change.old === null && isPatch(change.new)) return parsePatch(change.new);
   if (change.old === null) {
     const lines = splitLines(change.new).map((text) => ({ type: "add" as const, text }));
@@ -65,17 +77,4 @@ export function changeDiff(change: FileChange): Diff {
     }
   }
   return { lines, additions, deletions };
-}
-
-/** Guesses a Shiki language from a file name. */
-export function languageOf(path: string): string | undefined {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  const map: Record<string, string> = {
-    ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx", mjs: "javascript", cjs: "javascript",
-    rs: "rust", py: "python", go: "go", rb: "ruby", php: "php", java: "java", kt: "kotlin", swift: "swift",
-    dart: "dart", c: "c", h: "c", cpp: "cpp", cs: "csharp", css: "css", scss: "scss", html: "html", vue: "vue",
-    svelte: "svelte", json: "json", yaml: "yaml", yml: "yaml", toml: "toml", md: "markdown", sh: "bash",
-    zsh: "bash", sql: "sql", dockerfile: "docker", xml: "xml",
-  };
-  return map[ext];
 }

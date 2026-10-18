@@ -20,8 +20,6 @@ export interface ChangedFile {
   /** Number of edits. */
   edits: number;
   lastAt: string;
-  /** `n` of the edits, oldest first. */
-  items: number[];
 }
 
 export interface Activity {
@@ -33,10 +31,21 @@ export interface Activity {
   startedAt: string | null;
   lastAt: string | null;
   durationMs: number | null;
-  results: Map<string, { is_error: boolean; rejected: boolean; summary: string }>;
 }
 
+// The Activity and Files tabs ask for the same timeline.
+const cache = new WeakMap<StoredItem[], Activity>();
+
 export function computeActivity(items: StoredItem[]): Activity {
+  let activity = cache.get(items);
+  if (!activity) {
+    activity = compute(items);
+    cache.set(items, activity);
+  }
+  return activity;
+}
+
+function compute(items: StoredItem[]): Activity {
   const results = new Map<string, { is_error: boolean; rejected: boolean; summary: string }>();
   for (const it of items) {
     if (it.type === "tool_result") results.set(it.tool_use_id, { is_error: it.is_error, rejected: it.rejected, summary: it.summary });
@@ -77,12 +86,11 @@ export function computeActivity(items: StoredItem[]): Activity {
           const path = it.change?.path ?? it.summary;
           if (!path) break;
           const d = it.change ? changeDiff(it.change) : { additions: 0, deletions: 0 };
-          const f = files.get(path) ?? { path, additions: 0, deletions: 0, edits: 0, lastAt: it.timestamp, items: [] };
+          const f = files.get(path) ?? { path, additions: 0, deletions: 0, edits: 0, lastAt: it.timestamp };
           f.additions += d.additions;
           f.deletions += d.deletions;
           f.edits++;
           f.lastAt = it.timestamp;
-          f.items.push(it.n);
           files.set(path, f);
         }
         break;
@@ -100,6 +108,5 @@ export function computeActivity(items: StoredItem[]): Activity {
     startedAt,
     lastAt,
     durationMs: a !== null && b !== null ? b - a : null,
-    results,
   };
 }
