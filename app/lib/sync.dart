@@ -4,6 +4,7 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'api.dart';
@@ -12,30 +13,85 @@ import 'models.dart';
 
 enum ConnectionStatus { connecting, online, offline }
 
-class TimelineState {
+/// Loaded part of one conversation. Notifies on its own, so a new item only
+/// rebuilds the screen showing it.
+class TimelineState extends ChangeNotifier {
   final List<TimelineItem> items = [];
+
+  /// Older items exist before [items].
   bool hasMore = true;
+
+  /// Latest page in flight.
   bool loading = false;
+  bool loadingOlder = false;
   bool loaded = false;
+
+  /// Items may have been missed (resync): refresh before showing.
+  bool stale = false;
   String? error;
+  String? olderError;
+
+  /// Bumped on every change, to memoize what is derived from [items].
+  int version = 0;
+
+  /// Bumped by [reset]: requests started before are dropped.
+  int generation = 0;
 
   void merge(Iterable<TimelineItem> incoming) {
     final known = items.map((i) => i.n).toSet();
     items.addAll(incoming.where((i) => !known.contains(i.n)));
     items.sort((a, b) => a.n.compareTo(b.n));
+    version++;
+  }
+
+  /// Merges the latest page, keeping older pages already loaded.
+  void mergeLatest(List<TimelineItem> page, bool pageHasMore) {
+    if (items.isNotEmpty && page.isNotEmpty && pageHasMore && page.first.n > items.last.n + 1) {
+      // Missed more than a page: what we hold no longer joins up.
+      items.clear();
+    }
+    final oldFirst = items.isEmpty ? null : items.first.n;
+    merge(page);
+    if (oldFirst == null || (page.isNotEmpty && page.first.n <= oldFirst)) hasMore = pageHasMore;
+  }
+
+  /// The agent restarted in its pane (`/clear`, new process): numbering
+  /// starts over, so the old conversation goes.
+  void reset() {
+    items.clear();
+    hasMore = true;
+    loaded = false;
+    loading = false;
+    loadingOlder = false;
+    stale = false;
+    error = null;
+    olderError = null;
+    generation++;
+    changed();
+  }
+
+  void changed() {
+    version++;
+    notifyListeners();
   }
 }
 
 /// Live connection to one machine (PRD §16–§17): loads the state, then
-/// follows the event stream from the last known sequence number. A new
-/// bridge epoch means the daemon restarted: reload everything.
+/// follows the event stream from the last known sequence number. The bridge
+/// replays what was missed; when it can't (new epoch, expired events), it
+/// asks for a resync and the state is reloaded.
 class MachineConnection extends ChangeNotifier {
-  MachineConnection(this.machine, {required this.onNotification, this.cache}) : client = BridgeClient(machine);
+  MachineConnection(this.machine,
+      {required this.onNotification, this.onMachineChanged, this.cache, BridgeClient? client})
+      : client = client ?? BridgeClient(machine);
 
   final PairedMachine machine;
   final TimelineCache? cache;
   final BridgeClient client;
   final void Function(AgentNotification) onNotification;
+
+  /// Name or addresses changed: persist the machine.
+  final VoidCallback? onMachineChanged;
 
   ConnectionStatus status = ConnectionStatus.connecting;
   String? lastError;
@@ -46,42 +102,97 @@ class MachineConnection extends ChangeNotifier {
 
   String? _epoch;
   int _seq = 0;
+
+  /// Last sequence number when the stream said hello: events up to it are
+  /// replayed ones.
+  int _helloSeq = 0;
   WebSocketChannel? _channel;
   StreamSubscription? _subscription;
   bool _disposed = false;
   int _attempt = 0;
   Timer? _retry;
   Completer<void>? _closed;
+  bool _reconnectNow = false;
+  final List<Completer<void>> _settled = [];
+
+  /// Events received while the state reloads, applied after it.
+  List<Map<String, dynamic>>? _buffer;
+  Future<void>? _resyncing;
+
+  /// Agents whose timeline is on screen, with how many screens show it.
+  final Map<String, int> _watched = {};
+
+  /// Agent id → key of the prompt already answered from this phone.
+  final Map<String, String> _answered = {};
+
+  static const pingInterval = Duration(seconds: 15);
 
   void start() => _loop();
 
-  /// Reconnects now (app resumed, pull to refresh).
-  void reconnect() {
+  /// Reconnects now (app resumed, pull to refresh). [force] also drops a
+  /// connection that looks online: after a network change or a long sleep
+  /// the socket may be dead without knowing it.
+  void reconnect({bool force = false}) {
+    if (status == ConnectionStatus.online && !force) return;
     _retry?.cancel();
-    if (status == ConnectionStatus.online) return;
     _attempt = 0;
-    _closed?.complete();
+    _reconnectNow = true;
+    final closed = _closed;
+    if (closed != null && !closed.isCompleted) closed.complete();
+  }
+
+  /// Pull to refresh: reloads the state when online, otherwise reconnects
+  /// and waits for the attempt to end.
+  Future<void> refresh() async {
+    if (status == ConnectionStatus.online) {
+      try {
+        await _resync();
+      } catch (_) {}
+      return;
+    }
+    final settled = Completer<void>();
+    _settled.add(settled);
+    reconnect();
+    await settled.future.timeout(const Duration(seconds: 12), onTimeout: () {});
+  }
+
+  void _settle() {
+    for (final c in _settled) {
+      if (!c.isCompleted) c.complete();
+    }
+    _settled.clear();
   }
 
   Future<void> _loop() async {
     while (!_disposed) {
+      DateTime? openedAt;
       try {
         _setStatus(ConnectionStatus.connecting);
         await client.resolveAddress();
-        await _loadState();
+        // First connection: show the agents without waiting for the stream.
+        if (_epoch == null) await _loadState();
+        openedAt = DateTime.now();
         await _openStream();
-        _attempt = 0;
       } catch (e) {
         lastError = e.toString();
       }
       if (_disposed) return;
+      // Only a connection that held for a while resets the backoff, so a
+      // socket dying right away doesn't retry every second.
+      if (openedAt != null && DateTime.now().difference(openedAt) > const Duration(seconds: 30)) _attempt = 0;
+      if (_reconnectNow) {
+        _reconnectNow = false;
+        continue;
+      }
       _setStatus(ConnectionStatus.offline);
+      _settle();
       final delay = Duration(seconds: min(30, 1 << min(_attempt++, 5)));
-      _closed = Completer<void>();
+      final wake = _closed = Completer<void>();
       _retry = Timer(delay, () {
-        if (!(_closed?.isCompleted ?? true)) _closed!.complete();
+        if (!wake.isCompleted) wake.complete();
       });
-      await _closed!.future;
+      await wake.future;
+      _reconnectNow = false;
     }
   }
 
@@ -90,8 +201,8 @@ class MachineConnection extends ChangeNotifier {
     final machineInfo = s['machine'] as Map;
     _epoch = machineInfo['epoch'] as String;
     _seq = s['seq'] as int;
-    final name = machineInfo['machine_name'] as String?;
-    if (name != null) machine.name = name;
+    if (_setName(machineInfo['machine_name'] as String?)) onMachineChanged?.call();
+    final previous = Map.of(agents);
     agents
       ..clear()
       ..addEntries([
@@ -105,72 +216,165 @@ class MachineConnection extends ChangeNotifier {
           Workspace(w['session'] as String, w['workspace_id'] as String, w['label'] as String?)
       ]);
     timelines.removeWhere((id, _) => !agents.containsKey(id));
-    // Items may have been missed while offline: reload open timelines.
-    for (final id in timelines.keys.toList()) {
-      unawaited(loadTimeline(id, refresh: true));
+    // Items may have been missed: refresh the timelines on screen now, the
+    // others when they are opened again.
+    for (final MapEntry(key: id, value: t) in timelines.entries) {
+      final before = previous[id];
+      if (before != null && before.instanceId != agents[id]!.instanceId) {
+        t.reset();
+      } else {
+        t.stale = true;
+      }
+      if (_watched.containsKey(id)) unawaited(loadTimeline(id));
     }
     lastSyncAt = DateTime.now();
     notifyListeners();
   }
 
+  /// Reloads the state while the stream keeps running; events received in
+  /// the meantime are applied afterwards.
+  Future<void> _resync() => _resyncing ??= () async {
+        _buffer = [];
+        try {
+          await _loadState();
+        } catch (e) {
+          lastError = e.toString();
+          // Start over: reconnect, then load the state before the stream.
+          _epoch = null;
+          reconnect(force: true);
+          rethrow;
+        } finally {
+          final pending = _buffer ?? const [];
+          _buffer = null;
+          _resyncing = null;
+          for (final e in pending) {
+            _apply(e);
+          }
+        }
+      }();
+
+  /// Picks up a new machine name and the addresses the bridge listens on
+  /// now (the Tailscale or LAN IP may have changed since pairing).
+  Future<void> _refreshMachine() async {
+    try {
+      final m = await client.machineInfo();
+      final info = (m['machine'] as Map?) ?? const {};
+      var changed = _setName(info['machine_name'] as String?);
+      final raw = m['addresses'] ?? info['addresses'];
+      if (raw is List) {
+        final fresh = raw.whereType<String>().where((a) => a.isNotEmpty).toList();
+        final current = client.address;
+        final next = [?current, ...fresh.where((a) => a != current)];
+        if (fresh.isNotEmpty && !listEquals(next, machine.addresses)) {
+          machine.addresses = next;
+          changed = true;
+        }
+      }
+      if (changed) {
+        onMachineChanged?.call();
+        notifyListeners();
+      }
+    } catch (_) {
+      // Older bridges or a blip: keep what we have.
+    }
+  }
+
+  bool _setName(String? name) {
+    if (name == null || name.isEmpty || name == machine.name) return false;
+    machine.name = name;
+    return true;
+  }
+
   Future<void> _openStream() async {
-    final channel = WebSocketChannel.connect(client.streamUri(since: _seq, epoch: _epoch));
-    _channel = channel;
-    await channel.ready.timeout(const Duration(seconds: 8));
-    final done = Completer<void>();
-    _subscription = channel.stream.listen(
-      (raw) => _handle(jsonDecode(raw as String) as Map<String, dynamic>),
-      onError: (_) => done.isCompleted ? null : done.complete(),
-      onDone: () => done.isCompleted ? null : done.complete(),
-      cancelOnError: true,
+    final channel = IOWebSocketChannel.connect(
+      client.streamUri(since: _seq, epoch: _epoch),
+      // The bridge pings every 20 s; our pings detect a dead socket (network
+      // change, sleep) instead of staying "online" for minutes.
+      pingInterval: pingInterval,
+      connectTimeout: const Duration(seconds: 8),
     );
-    final closed = _closed = Completer<void>();
-    await Future.any([done.future, closed.future]);
-    await _subscription?.cancel();
-    await channel.sink.close();
-    _channel = null;
+    _channel = channel;
+    try {
+      await channel.ready.timeout(const Duration(seconds: 8));
+      final done = Completer<void>();
+      final closed = _closed = Completer<void>();
+      _subscription = channel.stream.listen(
+        (raw) => _handle(jsonDecode(raw as String) as Map<String, dynamic>),
+        onError: (_) => done.isCompleted ? null : done.complete(),
+        onDone: () => done.isCompleted ? null : done.complete(),
+        cancelOnError: true,
+      );
+      await Future.any([done.future, closed.future]);
+    } finally {
+      await _subscription?.cancel();
+      _subscription = null;
+      unawaited(channel.sink.close().timeout(const Duration(seconds: 2), onTimeout: () {}).catchError((_) {}));
+      _channel = null;
+    }
   }
 
   void _handle(Map<String, dynamic> e) {
-    final type = e['type'] as String?;
-    if (type == 'hello') {
-      if (e['resync_required'] == true) {
-        // Epoch changed or events expired: reload, then keep the stream.
-        _loadState().catchError((_) {});
-      }
+    if (e['type'] == 'hello') {
+      _helloSeq = e['seq'] as int? ?? 0;
+      lastError = null;
+      _reconnectNow = false;
       _setStatus(ConnectionStatus.online);
+      _settle();
+      if (e['resync_required'] == true) unawaited(_resync().catchError((_) {}));
+      unawaited(_refreshMachine());
       return;
     }
+    final buffer = _buffer;
+    if (buffer != null) {
+      buffer.add(e);
+      return;
+    }
+    _apply(e);
+  }
+
+  void _apply(Map<String, dynamic> e) {
+    final type = e['type'] as String?;
     final seq = e['seq'] as int? ?? 0;
     if (seq <= _seq) return;
     _seq = seq;
+    lastSyncAt = DateTime.now();
     final agentId = e['agent_id'] as String?;
     final data = (e['data'] as Map?)?.cast<String, dynamic>() ?? const {};
     switch (type) {
       case 'agent.updated':
-        agents[agentId!] = Agent.fromJson(machine.machineId, data);
+        final agent = Agent.fromJson(machine.machineId, data);
+        final before = agents[agent.id];
+        agents[agent.id] = agent;
+        if (before != null && before.instanceId != agent.instanceId) _resetTimeline(agent.id);
+        notifyListeners();
       case 'agent.removed':
         agents.remove(agentId);
         timelines.remove(agentId);
+        _answered.remove(agentId);
+        notifyListeners();
       case 'agent.item':
         final timeline = timelines[agentId];
         if (timeline != null && timeline.loaded) {
           timeline.merge([TimelineItem.fromJson(data)]);
+          timeline.changed();
           _saveTimeline(agentId!);
         }
       case 'notification':
+        final interactionId = data['interaction_id'] as String?;
+        final kind = data['kind'] as String? ?? '';
+        final title = data['title'] as String? ?? '';
         onNotification(AgentNotification(
           machine.machineId,
           data['agent_id'] as String? ?? agentId ?? '',
-          data['kind'] as String? ?? '',
-          data['title'] as String? ?? '',
+          kind,
+          title.isEmpty ? AgentNotification.defaultTitle(kind) : title,
           data['body'] as String? ?? '',
+          interactionId: interactionId == null || interactionId.isEmpty ? null : interactionId,
+          replayed: seq <= _helloSeq,
         ));
       default:
         return; // Unknown events are ignored.
     }
-    lastSyncAt = DateTime.now();
-    notifyListeners();
   }
 
   void _setStatus(ConnectionStatus s) {
@@ -179,9 +383,74 @@ class MachineConnection extends ChangeNotifier {
     notifyListeners();
   }
 
+  // -------------------------------------------------------------- answers
+
+  /// Whether the prompt [agent] shows was already answered from this phone.
+  bool answered(Agent agent) {
+    final i = agent.interaction;
+    return i != null && _answered[agent.id] == i.key;
+  }
+
+  /// Answers the prompt [agent] shows: picks option [number], or denies
+  /// when null. The prompt then stays marked as answered (buttons off)
+  /// until the agent moves on, so a second tap can't land on the next one.
+  /// Returns false when it was already answered.
+  Future<bool> answer(Agent agent, {int? number, String? text}) async {
+    final i = agent.interaction;
+    if (i == null || answered(agent)) return false;
+    final key = i.key;
+    _answered[agent.id] = key;
+    notifyListeners();
+    try {
+      if (number != null) {
+        await client.choose(agent.id, number, text: text, interactionId: i.id);
+      } else {
+        await client.deny(agent.id, text, interactionId: i.id);
+      }
+    } catch (e) {
+      _answered.remove(agent.id);
+      notifyListeners();
+      if (e is BridgeException && e.code == 'interaction_changed') unawaited(refreshAgent(agent.id));
+      rethrow;
+    }
+    // The keys may not have landed: allow another try if nothing moved.
+    Timer(const Duration(seconds: 20), () {
+      if (!_disposed && _answered[agent.id] == key) {
+        _answered.remove(agent.id);
+        notifyListeners();
+      }
+    });
+    return true;
+  }
+
+  /// Fetches one agent now, without waiting for the stream.
+  Future<void> refreshAgent(String agentId) async {
+    try {
+      final agent = await client.agent(agentId);
+      if (_disposed) return;
+      agents[agentId] = agent;
+      notifyListeners();
+    } catch (_) {}
+  }
+
   // ------------------------------------------------------------- timeline
 
   TimelineState timeline(String agentId) => timelines.putIfAbsent(agentId, TimelineState.new);
+
+  /// A screen shows this timeline: keep it fresh after a resync.
+  void watch(String agentId) => _watched[agentId] = (_watched[agentId] ?? 0) + 1;
+
+  void unwatch(String agentId) {
+    final n = (_watched[agentId] ?? 1) - 1;
+    n <= 0 ? _watched.remove(agentId) : _watched[agentId] = n;
+  }
+
+  void _resetTimeline(String agentId) {
+    final t = timelines[agentId];
+    if (t == null) return;
+    t.reset();
+    if (_watched.containsKey(agentId)) unawaited(loadTimeline(agentId));
+  }
 
   void _saveTimeline(String agentId) {
     final agent = agents[agentId];
@@ -190,47 +459,60 @@ class MachineConnection extends ChangeNotifier {
     cache!.schedule(machine.machineId, agentId, agent.instanceId, t.items);
   }
 
+  /// Loads the latest page, or refreshes it when [refresh] or stale. Older
+  /// pages already loaded are kept, and so are live items received while
+  /// the request runs.
   Future<void> loadTimeline(String agentId, {bool refresh = false}) async {
     final t = timeline(agentId);
-    if (t.loading || (t.loaded && !refresh)) return;
+    if (t.loading || (t.loaded && !t.stale && !refresh)) return;
+    final generation = t.generation;
     t.loading = true;
-    notifyListeners();
+    t.error = null;
+    t.changed();
     // Show the cached conversation while the bridge answers.
     final agent = agents[agentId];
     if (!t.loaded && t.items.isEmpty && cache != null && agent != null) {
-      t.merge(await cache!.read(machine.machineId, agentId, agent.instanceId));
-      notifyListeners();
+      final cached = await cache!.read(machine.machineId, agentId, agent.instanceId);
+      if (generation != t.generation) return;
+      t.merge(cached);
+      t.changed();
     }
     try {
       final (items, hasMore) = await client.timeline(agentId, limit: 120);
-      if (refresh || !t.loaded) t.items.clear();
-      t.merge(items);
-      if (!t.loaded || refresh) t.hasMore = hasMore;
+      if (generation != t.generation) return;
+      t.mergeLatest(items, hasMore);
       t.loaded = true;
-      t.error = null;
+      t.stale = false;
       _saveTimeline(agentId);
     } catch (e) {
-      t.error = e.toString();
+      if (generation == t.generation) t.error = e.toString();
     } finally {
-      t.loading = false;
-      notifyListeners();
+      if (generation == t.generation) {
+        t.loading = false;
+        t.changed();
+      }
     }
   }
 
   Future<void> loadOlder(String agentId) async {
     final t = timeline(agentId);
-    if (t.loading || !t.hasMore || t.items.isEmpty) return;
-    t.loading = true;
-    notifyListeners();
+    if (t.loadingOlder || !t.loaded || !t.hasMore || t.items.isEmpty) return;
+    final generation = t.generation;
+    t.loadingOlder = true;
+    t.olderError = null;
+    t.changed();
     try {
       final (items, hasMore) = await client.timeline(agentId, before: t.items.first.n, limit: 120);
+      if (generation != t.generation) return;
       t.merge(items);
       t.hasMore = hasMore;
     } catch (e) {
-      t.error = e.toString();
+      if (generation == t.generation) t.olderError = e.toString();
     } finally {
-      t.loading = false;
-      notifyListeners();
+      if (generation == t.generation) {
+        t.loadingOlder = false;
+        t.changed();
+      }
     }
   }
 
@@ -239,6 +521,7 @@ class MachineConnection extends ChangeNotifier {
     _disposed = true;
     _retry?.cancel();
     _closed?.isCompleted == false ? _closed!.complete() : null;
+    _settle();
     _subscription?.cancel();
     _channel?.sink.close();
     client.close();
@@ -267,7 +550,7 @@ class AppModel extends ChangeNotifier {
       }
     }
     loaded = true;
-    notifyListeners();
+    _changed();
   }
 
   Future<void> _save() => _storage.write(
@@ -276,44 +559,65 @@ class AppModel extends ChangeNotifier {
       );
 
   void _add(PairedMachine machine) {
-    final connection = MachineConnection(machine, onNotification: _notifications.add, cache: _cache)
-      ..addListener(notifyListeners)
+    final connection = MachineConnection(
+      machine,
+      onNotification: _notifications.add,
+      onMachineChanged: () => unawaited(_save().catchError((_) {})),
+      cache: _cache,
+    )
+      ..addListener(_changed)
       ..start();
     connections.add(connection);
+  }
+
+  List<Agent>? _sorted;
+
+  void _changed() {
+    _sorted = null;
+    notifyListeners();
   }
 
   /// Adds a connection without persisting or starting it (widget tests).
   @visibleForTesting
   void addConnectionForTest(MachineConnection connection) {
-    connections.add(connection..addListener(notifyListeners));
-    notifyListeners();
+    connections.add(connection..addListener(_changed));
+    _changed();
   }
 
   Future<void> addMachine(PairedMachine machine) async {
     await removeMachine(machine.machineId, save: false);
     _add(machine);
     await _save();
-    notifyListeners();
+    _changed();
   }
 
   Future<void> removeMachine(String machineId, {bool save = true}) async {
     final existing = connections.where((c) => c.machine.machineId == machineId).toList();
     for (final c in existing) {
       connections.remove(c);
+      // Forgotten for good: stop the bridge from pushing to this phone.
+      if (save) {
+        try {
+          await c.client.registerPush(null).timeout(const Duration(seconds: 4));
+        } catch (_) {}
+      }
+      c.removeListener(_changed);
       c.dispose();
     }
-    if (save) await _cache.remove(machineId);
     if (save) {
+      await _cache.remove(machineId);
       await _save();
-      notifyListeners();
+      _changed();
     }
   }
 
-  void reconnectAll() {
+  void reconnectAll({bool force = false}) {
     for (final c in connections) {
-      c.reconnect();
+      c.reconnect(force: force);
     }
   }
+
+  Future<void> refresh() => Future.wait([for (final c in connections) c.refresh()]);
 
   MachineConnection? connection(String machineId) {
     for (final c in connections) {
@@ -323,17 +627,17 @@ class AppModel extends ChangeNotifier {
   }
 
   /// Every agent of every machine, blocked first, then most recent activity.
-  List<Agent> get agents {
-    final all = [for (final c in connections) ...c.agents.values];
-    all.sort((a, b) {
-      final p = a.attention.priority.compareTo(b.attention.priority);
-      if (p != 0) return p;
-      final at = a.lastActivityAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final bt = b.lastActivityAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-      return bt.compareTo(at);
-    });
-    return all;
-  }
+  List<Agent> get agents => _sorted ??= () {
+        final all = [for (final c in connections) ...c.agents.values];
+        all.sort((a, b) {
+          final p = a.attention.priority.compareTo(b.attention.priority);
+          if (p != 0) return p;
+          final at = a.lastActivityAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+          final bt = b.lastActivityAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+          return bt.compareTo(at);
+        });
+        return List<Agent>.unmodifiable(all);
+      }();
 
   bool get multiMachine => connections.length > 1;
 

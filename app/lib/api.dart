@@ -93,6 +93,13 @@ class BridgeClient {
   Future<Map<String, dynamic>> state() async =>
       (await _send('GET', '/v1/state') as Map).cast<String, dynamic>();
 
+  /// Machine info, including the addresses it listens on (newer bridges).
+  Future<Map<String, dynamic>> machineInfo() async =>
+      (await _send('GET', '/v1/machine') as Map).cast<String, dynamic>();
+
+  Future<Agent> agent(String agentId) async =>
+      Agent.fromJson(machine.machineId, (await _send('GET', '/v1/agents/$agentId') as Map).cast<String, dynamic>());
+
   Future<(List<TimelineItem>, bool)> timeline(String agentId, {int? before, int limit = 100}) async {
     final r = await _send('GET', '/v1/agents/$agentId/timeline', query: {
       'limit': '$limit',
@@ -107,14 +114,20 @@ class BridgeClient {
   Future<void> sendMessage(String agentId, String text) =>
       _send('POST', '/v1/agents/$agentId/messages', body: {'text': text});
 
-  Future<void> interrupt(String agentId) => _send('POST', '/v1/agents/$agentId/interrupt');
+  /// Sends Esc. The bridge refuses with `agent_blocked` while the agent
+  /// waits on a prompt (Esc would deny it), unless [force].
+  Future<void> interrupt(String agentId, {bool force = false}) =>
+      _send('POST', '/v1/agents/$agentId/interrupt', body: {if (force) 'force': true});
 
-  /// Picks an on-screen option; [text] answers a free-text option.
-  Future<void> choose(String agentId, int number, {String? text}) =>
-      _send('POST', '/v1/agents/$agentId/choice', body: {'number': number, 'text': ?text});
+  /// Picks an on-screen option; [text] answers a free-text option. With
+  /// [interactionId], the bridge refuses (`interaction_changed`) if the agent
+  /// now shows another prompt.
+  Future<void> choose(String agentId, int number, {String? text, String? interactionId}) =>
+      _send('POST', '/v1/agents/$agentId/choice',
+          body: {'number': number, 'text': ?text, 'interaction_id': ?interactionId});
 
-  Future<void> deny(String agentId, String? text) =>
-      _send('POST', '/v1/agents/$agentId/deny', body: {'text': text});
+  Future<void> deny(String agentId, String? text, {String? interactionId}) =>
+      _send('POST', '/v1/agents/$agentId/deny', body: {'text': text, 'interaction_id': ?interactionId});
 
   /// Raw input to the pane (permission `agents.input`).
   Future<void> input(String agentId, {String? text, List<String> keys = const []}) =>
@@ -140,6 +153,12 @@ class BridgeClient {
 
   Future<void> registerPush(String? endpoint) =>
       _send('POST', '/v1/push', body: {'endpoint': endpoint});
+
+  /// WebSocket URL of the live terminal of an agent.
+  Uri terminalUri(String agentId) {
+    final address = _address ?? machine.addresses.first;
+    return Uri.parse('ws://$address/v1/agents/$agentId/terminal').replace(queryParameters: {'token': machine.token});
+  }
 
   /// WebSocket URL for the event stream.
   Uri streamUri({int? since, String? epoch}) {

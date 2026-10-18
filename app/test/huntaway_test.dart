@@ -9,6 +9,7 @@ import 'dart:io';
 import 'package:huntaway/api.dart';
 import 'package:huntaway/cache.dart';
 import 'package:huntaway/models.dart';
+import 'package:huntaway/sync.dart';
 import 'package:huntaway/ui/timeline.dart';
 
 TimelineItem item(int n, String type, [Map<String, dynamic> extra = const {}]) =>
@@ -167,5 +168,98 @@ void main() {
     await cache.remove('m1');
     expect(await cache.read('m1', 'default:w1:p1', 'inst-a'), isEmpty);
     await dir.delete(recursive: true);
+  });
+
+  group('timeline state', () {
+    test('a refresh keeps older pages and live items', () {
+      final t = TimelineState();
+      t.mergeLatest([for (var n = 100; n < 220; n++) item(n, 'user_message')], true);
+      expect(t.hasMore, isTrue);
+      t.merge([for (var n = 0; n < 100; n++) item(n, 'user_message')]);
+      t.hasMore = false;
+      t.merge([item(220, 'assistant_message')]); // live item
+      t.mergeLatest([for (var n = 101; n < 221; n++) item(n, 'user_message')], true);
+      expect(t.items.length, 221);
+      expect(t.items.first.n, 0);
+      expect(t.hasMore, isFalse);
+    });
+
+    test('a page that no longer joins up replaces what was held', () {
+      final t = TimelineState()..mergeLatest([for (var n = 0; n < 10; n++) item(n, 'user_message')], false);
+      t.mergeLatest([for (var n = 500; n < 620; n++) item(n, 'user_message')], true);
+      expect(t.items.first.n, 500);
+      expect(t.hasMore, isTrue);
+    });
+
+    test('reset drops the conversation of the previous instance', () {
+      final t = TimelineState()
+        ..mergeLatest([item(0, 'user_message')], false)
+        ..loaded = true;
+      final generation = t.generation;
+      t.reset();
+      expect(t.items, isEmpty);
+      expect(t.loaded, isFalse);
+      expect(t.generation, generation + 1);
+    });
+  });
+
+  group('answers', () {
+    final machine = PairedMachine(
+      machineId: 'm1',
+      name: 'Mac',
+      addresses: ['bridge:7420'],
+      token: 't',
+      deviceId: 'd1',
+      fingerprint: 'sha256:x',
+    );
+    Agent blocked({String? id}) => Agent.fromJson('m1', {
+          'id': 'a1',
+          'attention': {'status': 'blocked', 'reason': 'approval'},
+          'interaction': {
+            'id': ?id,
+            'reason': 'approval',
+            'tool': {'name': 'Bash', 'summary': 'rm -rf build', 'input': {}},
+            'questions': [],
+            'options': [
+              {'number': 1, 'label': 'Yes'},
+              {'number': 2, 'label': 'No'},
+            ],
+          },
+        });
+
+    test('send the interaction id and ignore a second tap on the same prompt', () async {
+      final bodies = <Map>[];
+      final client = BridgeClient(machine, client: MockClient((r) async {
+        if (r.url.path == '/healthz') return http.Response('{"ok":true}', 200);
+        bodies.add(jsonDecode(r.body) as Map);
+        return http.Response('{"ok":true}', 200);
+      }));
+      final c = MachineConnection(machine, onNotification: (_) {}, client: client);
+      final agent = blocked(id: 'i-1');
+      expect(await c.answer(agent, number: 1), isTrue);
+      expect(c.answered(agent), isTrue);
+      expect(await c.answer(agent, number: 1), isFalse);
+      expect(bodies, [
+        {'number': 1, 'interaction_id': 'i-1'}
+      ]);
+      // The next prompt can be answered.
+      expect(c.answered(blocked(id: 'i-2')), isFalse);
+      c.dispose();
+    });
+
+    test('a changed prompt is reported and can be answered again', () async {
+      final client = BridgeClient(machine, client: MockClient((r) async {
+        if (r.url.path == '/healthz') return http.Response('{"ok":true}', 200);
+        if (r.method == 'GET') return http.Response('{}', 404);
+        return http.Response(
+            '{"error":{"code":"interaction_changed","message":"the agent is now asking something else"}}', 409);
+      }));
+      final c = MachineConnection(machine, onNotification: (_) {}, client: client);
+      final agent = blocked();
+      await expectLater(c.answer(agent),
+          throwsA(isA<BridgeException>().having((e) => e.code, 'code', 'interaction_changed')));
+      expect(c.answered(agent), isFalse);
+      c.dispose();
+    });
   });
 }

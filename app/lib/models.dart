@@ -21,7 +21,9 @@ class PairedMachine {
 
   final String machineId;
   String name;
-  final List<String> addresses;
+
+  /// Tried in order; refreshed from the bridge when it advertises new ones.
+  List<String> addresses;
   final String token;
   final String deviceId;
   final String fingerprint;
@@ -142,7 +144,10 @@ class PendingTool {
 
 /// What a blocked agent is waiting for.
 class Interaction {
-  Interaction(this.reason, this.tool, this.questions, this.options);
+  Interaction(this.reason, this.tool, this.questions, this.options, {this.id});
+
+  /// Identifies this prompt; sent back with the answer. Null on older bridges.
+  final String? id;
   final String reason;
   final PendingTool? tool;
   final List<Question> questions;
@@ -156,9 +161,15 @@ class Interaction {
     return null;
   }
 
+  /// Tells two prompts apart, even on bridges without [id].
+  String get key =>
+      id ?? [reason, tool?.summary, questions.firstOrNull?.question, ...options.map((o) => o.label)].join('\u0000');
+
   factory Interaction.fromJson(Map<String, dynamic> j) {
     final tool = j['tool'] as Map<String, dynamic>?;
+    final id = j['id'] as String?;
     return Interaction(
+      id: id == null || id.isEmpty ? null : id,
       j['reason'] as String? ?? 'prompt',
       tool == null
           ? null
@@ -279,10 +290,25 @@ class Workspace {
 
 /// Notification pushed by the bridge (PRD §12).
 class AgentNotification {
-  AgentNotification(this.machineId, this.agentId, this.kind, this.title, this.body);
+  AgentNotification(this.machineId, this.agentId, this.kind, this.title, this.body,
+      {this.interactionId, this.replayed = false});
   final String machineId;
   final String agentId;
   final String kind;
   final String title;
   final String body;
+
+  /// Prompt a `blocked` notification is about (newer bridges).
+  final String? interactionId;
+
+  /// Replayed after a reconnection: push may already have shown it.
+  final bool replayed;
+
+  /// Title for payloads that carry none (the bridge may send only the kind).
+  static String defaultTitle(String kind) => switch (kind) {
+        'blocked' => 'An agent needs you',
+        'done' => 'An agent is done',
+        'error' => 'An agent hit an error',
+        _ => 'Huntaway',
+      };
 }
