@@ -2,12 +2,15 @@
 //!
 //! UnifiedPush endpoints are plain HTTPS URLs (ntfy or another distributor);
 //! a POST delivers the body to the app. The payload stays minimal (PRD §12.4):
-//! the app fetches details from the bridge when opened. Notifications raised
-//! within a short window are grouped into one push.
+//! it goes through a third-party relay in clear, so it only names the
+//! machine, the agent and the kind of event, with a generic title. The app
+//! fetches the details from the bridge. Notifications raised within a short
+//! window are grouped into one push.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::future::join_all;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -23,7 +26,7 @@ pub async fn run(mut rx: mpsc::UnboundedReceiver<Notification>, store: Store, ma
     let client = match reqwest::Client::builder().timeout(Duration::from_secs(10)).build() {
         Ok(client) => client,
         Err(e) => {
-            warn!(error = %e, "client HTTP indisponible, push désactivé");
+            warn!(error = %e, "HTTP client unavailable, push disabled");
             return;
         }
     };
@@ -35,7 +38,7 @@ pub async fn run(mut rx: mpsc::UnboundedReceiver<Notification>, store: Store, ma
         }
         // The desktop app in front of the user already showed it.
         if presence.desktop_active() {
-            info!(count = batch.len(), "app desktop active : pas de push");
+            info!(count = batch.len(), "desktop app active: no push");
             continue;
         }
         let payload = payload(&machine_id, &batch);
@@ -43,28 +46,40 @@ pub async fn run(mut rx: mpsc::UnboundedReceiver<Notification>, store: Store, ma
         let devices = match store.devices() {
             Ok(d) => d.devices,
             Err(e) => {
-                warn!(error = %e, "lecture des appareils impossible");
+                warn!(error = %e, "cannot read devices");
                 continue;
             }
         };
-        for device in devices.into_iter().filter(|d| d.can("agents.read")) {
-            let Some(endpoint) = device.push_endpoint else { continue };
-            match client.post(&endpoint).header("TTL", "86400").json(&payload).send().await {
-                Ok(resp) if resp.status().is_success() => info!(device = %device.name, count = batch.len(), "push envoyé"),
-                Ok(resp) => warn!(device = %device.name, status = %resp.status(), "push refusé"),
-                Err(e) => warn!(device = %device.name, error = %e, "push impossible"),
+        // All devices at once: one slow endpoint must not delay the others.
+        let sends = devices.into_iter().filter(|d| d.can("agents.read")).filter_map(|device| {
+            let endpoint = device.push_endpoint.clone()?;
+            let request = client.post(&endpoint).header("TTL", "86400").json(&payload).send();
+            Some(async move { (device.name, endpoint, request.await) })
+        });
+        for (device, endpoint, result) in join_all(sends).await {
+            match result {
+                Ok(resp) if resp.status().is_success() => info!(%device, count = batch.len(), "push sent"),
+                // The distributor forgot this endpoint (app uninstalled, unregistered).
+                Ok(resp) if matches!(resp.status().as_u16(), 404 | 410) => {
+                    warn!(%device, status = %resp.status(), "push endpoint gone, unregistered");
+                    if let Err(e) = store.drop_push_endpoint(&endpoint) {
+                        warn!(error = %e, "cannot unregister the push endpoint");
+                    }
+                }
+                Ok(resp) => warn!(%device, status = %resp.status(), "push refused"),
+                Err(e) => warn!(%device, error = %e, "push failed"),
             }
         }
     }
 }
 
 /// One notification as is; several become a summary that opens the most
-/// urgent agent (blocked first).
+/// urgent agent (blocked first). No message content: titles are generic.
 fn payload(machine_id: &str, batch: &[Notification]) -> Value {
     if let [n] = batch {
         return json!({
             "v": 1, "machine_id": machine_id, "agent_id": n.agent_id,
-            "kind": n.kind, "title": n.title, "body": n.body,
+            "kind": n.kind, "interaction_id": n.interaction_id, "title": n.title,
         });
     }
     let rank = |n: &Notification| match n.kind.as_str() {
@@ -75,16 +90,15 @@ fn payload(machine_id: &str, batch: &[Notification]) -> Value {
     let lead = batch.iter().min_by_key(|n| rank(n)).expect("non-empty batch");
     let blocked = batch.iter().filter(|n| n.kind == "blocked").count();
     let title = if blocked > 1 {
-        format!("{blocked} agents ont besoin de toi")
+        format!("{blocked} agents need you")
     } else if blocked == 1 {
-        format!("{} · et {} autre(s)", lead.title, batch.len() - 1)
+        format!("{} (+{} more)", lead.title, batch.len() - 1)
     } else {
-        format!("{} notifications d'agents", batch.len())
+        format!("{} agent notifications", batch.len())
     };
-    let body = batch.iter().map(|n| n.body.split(" · ").next().unwrap_or(&n.body).to_string()).collect::<Vec<_>>().join(", ");
     json!({
         "v": 1, "machine_id": machine_id, "agent_id": lead.agent_id,
-        "kind": lead.kind, "title": title, "body": body, "count": batch.len(),
+        "kind": lead.kind, "interaction_id": lead.interaction_id, "title": title, "count": batch.len(),
     })
 }
 
@@ -97,19 +111,22 @@ mod tests {
     }
 
     #[test]
-    fn single_notification_is_passed_through() {
-        let p = payload("m", &[n("a", "done", "api · ok")]);
-        assert_eq!(p["title"], "done title");
-        assert_eq!(p["body"], "api · ok");
+    fn single_notification_carries_no_content() {
+        let mut one = n("a", "blocked", "api · Approval: Bash rm -rf");
+        one.interaction_id = Some("toolu_1".into());
+        let p = payload("m", &[one]);
+        assert_eq!(p["title"], "blocked title");
+        assert_eq!(p["interaction_id"], "toolu_1");
+        assert!(p.get("body").is_none());
         assert!(p.get("count").is_none());
     }
 
     #[test]
     fn several_are_grouped_and_open_the_blocked_agent() {
-        let p = payload("m", &[n("a", "done", "web · fini"), n("b", "blocked", "api · Bash x"), n("c", "blocked", "app · ?")]);
-        assert_eq!(p["title"], "2 agents ont besoin de toi");
+        let p = payload("m", &[n("a", "done", "web · done"), n("b", "blocked", "api · Bash x"), n("c", "blocked", "app · ?")]);
+        assert_eq!(p["title"], "2 agents need you");
         assert_eq!(p["agent_id"], "b");
-        assert_eq!(p["body"], "web, api, app");
+        assert!(p.get("body").is_none());
         assert_eq!(p["count"], 3);
     }
 }
