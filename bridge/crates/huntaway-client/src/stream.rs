@@ -2,7 +2,7 @@
 //! `epoch`, reloads the state when the daemon asks for a resync, measures the
 //! latency and reconnects with backoff.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
@@ -27,10 +27,15 @@ pub enum StreamEvent {
     Disconnected { error: String, retry_in: Duration },
 }
 
+/// Agents whose `agent.item` events are wanted; `None` = all.
+type ItemFilter = Arc<Mutex<Option<Vec<String>>>>;
+
 /// Stops the follower when dropped.
 pub struct StreamHandle {
     task: JoinHandle<()>,
     kick: Arc<Notify>,
+    items: ItemFilter,
+    items_changed: Arc<Notify>,
 }
 
 impl StreamHandle {
@@ -42,6 +47,16 @@ impl StreamHandle {
     /// connection.
     pub fn kick(&self) {
         self.kick.notify_one();
+    }
+
+    /// Limits `agent.item` events to these agents (`None` = every agent,
+    /// the default; an empty list = none). Applied to the live connection
+    /// at once and kept for reconnections. Other events are not filtered.
+    /// Items of agents outside the filter are not replayed either: reload
+    /// an agent's timeline after adding it.
+    pub fn set_items(&self, agent_ids: Option<Vec<String>>) {
+        *self.items.lock().unwrap() = agent_ids;
+        self.items_changed.notify_one();
     }
 }
 
@@ -60,10 +75,30 @@ const BACKOFF_MIN: Duration = Duration::from_millis(500);
 const BACKOFF_MAX: Duration = Duration::from_secs(15);
 
 pub fn spawn(client: Client) -> (StreamHandle, mpsc::UnboundedReceiver<StreamEvent>) {
+    spawn_with_items(client, None)
+}
+
+/// Like [`spawn`], with an initial `agent.item` filter (see [`StreamHandle::set_items`]).
+pub fn spawn_with_items(client: Client, items: Option<Vec<String>>) -> (StreamHandle, mpsc::UnboundedReceiver<StreamEvent>) {
     let (tx, rx) = mpsc::unbounded_channel();
     let kick = Arc::new(Notify::new());
-    let task = tokio::spawn(run(client, tx, kick.clone()));
-    (StreamHandle { task, kick }, rx)
+    let items: ItemFilter = Arc::new(Mutex::new(items));
+    let items_changed = Arc::new(Notify::new());
+    let link = Link { kick: kick.clone(), items: items.clone(), items_changed: items_changed.clone() };
+    let task = tokio::spawn(run(client, tx, link));
+    (StreamHandle { task, kick, items, items_changed }, rx)
+}
+
+/// What the handle shares with the follower task.
+struct Link {
+    kick: Arc<Notify>,
+    items: ItemFilter,
+    items_changed: Arc<Notify>,
+}
+
+/// `items` query parameter of the stream URL.
+fn items_query(items: &Option<Vec<String>>) -> Option<String> {
+    items.as_ref().map(|ids| format!("items={}", urlencoding::encode(&ids.join(","))))
 }
 
 struct Cursor {
@@ -71,12 +106,13 @@ struct Cursor {
     seq: u64,
 }
 
-async fn run(client: Client, tx: mpsc::UnboundedSender<StreamEvent>, kick: Arc<Notify>) {
+async fn run(client: Client, tx: mpsc::UnboundedSender<StreamEvent>, link: Link) {
+    let kick = &link.kick;
     let mut cursor = Cursor { epoch: None, seq: 0 };
     let mut backoff = BACKOFF_MIN;
     loop {
         let started = Instant::now();
-        let error = match follow(&client, &tx, &mut cursor, &kick).await {
+        let error = match follow(&client, &tx, &mut cursor, &link).await {
             Ok(()) => "connection closed".to_string(),
             Err(e) => e,
         };
@@ -95,11 +131,14 @@ async fn run(client: Client, tx: mpsc::UnboundedSender<StreamEvent>, kick: Arc<N
     }
 }
 
-async fn follow(client: &Client, tx: &mpsc::UnboundedSender<StreamEvent>, cursor: &mut Cursor, kick: &Notify) -> Result<(), String> {
-    let path = match &cursor.epoch {
-        Some(epoch) => format!("/v1/stream?since={}&epoch={}", cursor.seq, urlencoding::encode(epoch)),
-        None => "/v1/stream".to_string(),
-    };
+async fn follow(client: &Client, tx: &mpsc::UnboundedSender<StreamEvent>, cursor: &mut Cursor, link: &Link) -> Result<(), String> {
+    let kick = &*link.kick;
+    let mut params = Vec::new();
+    if let Some(epoch) = &cursor.epoch {
+        params.push(format!("since={}&epoch={}", cursor.seq, urlencoding::encode(epoch)));
+    }
+    params.extend(items_query(&link.items.lock().unwrap()));
+    let path = if params.is_empty() { "/v1/stream".to_string() } else { format!("/v1/stream?{}", params.join("&")) };
     let mut socket = None;
     let mut last_error = String::from("no address");
     for (index, url) in client.ws_candidates(&path) {
@@ -138,6 +177,11 @@ async fn follow(client: &Client, tx: &mpsc::UnboundedSender<StreamEvent>, cursor
             }
             _ = tokio::time::sleep_until(probe.unwrap_or_else(tokio::time::Instant::now)), if probe.is_some() => {
                 return Err("no answer from the machine".into());
+            }
+            _ = link.items_changed.notified() => {
+                let ids = link.items.lock().unwrap().clone();
+                let msg = serde_json::json!({ "type": "items", "agent_ids": ids });
+                sink.send(Message::Text(msg.to_string().into())).await.map_err(|e| e.to_string())?;
             }
             msg = source.next() => {
                 let Some(msg) = msg else { return Ok(()) };
@@ -220,6 +264,42 @@ mod tests {
         let (_handle, mut rx) = spawn(Client::new(vec![addr], "token".into()));
         let first = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
         assert!(matches!(first, StreamEvent::Disconnected { .. }), "{first:?}");
+    }
+
+    #[test]
+    fn items_filter_in_the_url() {
+        assert_eq!(items_query(&None), None);
+        assert_eq!(items_query(&Some(vec![])).as_deref(), Some("items="));
+        assert_eq!(items_query(&Some(vec!["default:w1:p1".into(), "x".into()])).as_deref(), Some("items=default%3Aw1%3Ap1%2Cx"));
+    }
+
+    /// Fake daemon that records the stream URL and the client messages.
+    #[tokio::test]
+    #[allow(clippy::result_large_err)]
+    async fn items_filter_is_sent_live_and_on_connect() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let (seen_tx, mut seen) = mpsc::unbounded_channel::<String>();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let seen_url = seen_tx.clone();
+            let callback = move |req: &tokio_tungstenite::tungstenite::handshake::server::Request, resp| {
+                let _ = seen_url.send(req.uri().to_string());
+                Ok(resp)
+            };
+            let mut ws = tokio_tungstenite::accept_hdr_async(stream, callback).await.unwrap();
+            while let Some(Ok(msg)) = ws.next().await {
+                if let Message::Text(text) = msg {
+                    let _ = seen_tx.send(text.to_string());
+                }
+            }
+        });
+        let (handle, _rx) = spawn_with_items(Client::new(vec![addr], "t".into()), Some(vec!["a".into()]));
+        let url = tokio::time::timeout(Duration::from_secs(5), seen.recv()).await.unwrap().unwrap();
+        assert!(url.starts_with("/v1/stream?items=a"), "{url}");
+        handle.set_items(Some(vec!["a".into(), "b".into()]));
+        let msg = tokio::time::timeout(Duration::from_secs(5), seen.recv()).await.unwrap().unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&msg).unwrap(), serde_json::json!({ "type": "items", "agent_ids": ["a", "b"] }));
     }
 
     async fn recv(rx: &mut mpsc::UnboundedReceiver<StreamEvent>) -> StreamEvent {

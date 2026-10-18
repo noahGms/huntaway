@@ -1,4 +1,5 @@
-//! Live terminal of an agent (`/v1/agents/{id}/terminal`): screens in,
+//! Live terminal of an agent (`/v1/agents/{id}/terminal`) or of any pane
+//! (`/v1/panes/{session}:{pane}/terminal`: scripts, shells): screens in,
 //! keystrokes out.
 
 use futures_util::{SinkExt, StreamExt};
@@ -38,7 +39,16 @@ impl Drop for TerminalHandle {
 }
 
 pub async fn open(client: &Client, agent_id: &str) -> Result<(TerminalHandle, mpsc::UnboundedReceiver<TerminalEvent>)> {
-    let path = format!("/v1/agents/{}/terminal", Client::segment(agent_id));
+    connect(client, &format!("/v1/agents/{}/terminal", Client::segment(agent_id))).await
+}
+
+/// Terminal of a pane by `<session>:<pane id>` (the `pane` of a script or shell).
+pub async fn open_pane(client: &Client, pane: &str) -> Result<(TerminalHandle, mpsc::UnboundedReceiver<TerminalEvent>)> {
+    connect(client, &format!("/v1/panes/{}/terminal", Client::segment(pane))).await
+}
+
+async fn connect(client: &Client, path: &str) -> Result<(TerminalHandle, mpsc::UnboundedReceiver<TerminalEvent>)> {
+    let path = path.to_string();
     let mut last = String::new();
     for (index, url) in client.ws_candidates(&path) {
         match tokio_tungstenite::connect_async(&url).await {
