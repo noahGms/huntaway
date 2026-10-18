@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
         Command::Interrupt { target } => {
             let agent = resolve(&target).await?;
             agent.client.agent_send_keys(&agent.info.pane_id, &["esc"]).await?;
-            println!("✓ Esc envoyé");
+            println!("✓ Esc sent");
             Ok(())
         }
         Command::Choice { target, number } => {
@@ -83,7 +83,7 @@ async fn main() -> Result<()> {
             let agent = resolve(&target).await?;
             let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
             agent.client.agent_send_keys(&agent.info.pane_id, &keys).await?;
-            println!("✓ touches envoyées");
+            println!("✓ keys sent");
             Ok(())
         }
         Command::Screen { target, source } => cmd_screen(&target, &source).await,
@@ -125,7 +125,7 @@ impl Agent {
 async fn all_agents() -> Result<Vec<Agent>> {
     let live = herdr_client::discover_live_sessions().await;
     if live.is_empty() {
-        bail!("aucune session Herdr active trouvée dans {}", herdr_client::config_dir().display());
+        bail!("no running Herdr session found in {}", herdr_client::config_dir().display());
     }
     let mut agents = Vec::new();
     for (session, _) in live {
@@ -159,9 +159,9 @@ async fn resolve(target: &str) -> Result<Agent> {
         }
     }
     match matches.len() {
-        0 => bail!("agent introuvable : {target} (voir `huntaway-demo agents`)"),
+        0 => bail!("agent not found: {target} (see `huntaway-demo agents`)"),
         1 => Ok(matches.remove(0)),
-        _ => bail!("cible ambiguë : {target}, préfixe avec la session (ex. default/{name})"),
+        _ => bail!("ambiguous target: {target}, prefix it with the session (e.g. default/{name})"),
     }
 }
 
@@ -178,7 +178,7 @@ async fn cmd_sessions() -> Result<()> {
                 pong.protocol,
                 session.socket.display()
             ),
-            None => println!("○ {:<16} hors ligne  {}", session.name, session.socket.display()),
+            None => println!("○ {:<16} offline  {}", session.name, session.socket.display()),
         }
     }
     Ok(())
@@ -224,7 +224,7 @@ async fn cmd_screen(target: &str, source: &str) -> Result<()> {
     println!("{text}");
     let options = numbered_options(&text);
     if !options.is_empty() {
-        println!("\n— options détectées —");
+        println!("\n— detected options —");
         print_options(&options, "");
     }
     Ok(())
@@ -233,7 +233,7 @@ async fn cmd_screen(target: &str, source: &str) -> Result<()> {
 fn print_options(options: &[ScreenOption], prefix: &str) {
     for o in options {
         let cursor = if o.selected { "❯" } else { " " };
-        let kind = if o.numbered { "" } else { " (curseur)" };
+        let kind = if o.numbered { "" } else { " (cursor)" };
         println!("{prefix}{cursor} {}. {}{kind}", o.number, o.label);
         if let Some(detail) = &o.detail {
             println!("{prefix}     {}", dim(&truncate(detail, 100)));
@@ -247,11 +247,11 @@ async fn choose(agent: &Agent, number: u32) -> Result<()> {
     // digits into a normal input box (PRD §14, `already_resolved`).
     let current = agent.client.agent_get(&agent.info.pane_id).await?;
     if current.agent_status.as_str() != "blocked" {
-        bail!("already_resolved : l'agent n'attend plus de réponse (état {})", current.agent_status.as_str());
+        bail!("already_resolved: the agent is no longer waiting for an answer (status {})", current.agent_status.as_str());
     }
     let screen = agent.client.agent_read(&agent.info.pane_id, ReadSource::Visible, None).await?;
     let options = numbered_options(&screen);
-    let keys = keys_for_choice(&options, number).ok_or_else(|| anyhow!("option {number} absente de l'écran"))?;
+    let keys = keys_for_choice(&options, number).ok_or_else(|| anyhow!("option {number} is not on screen"))?;
     let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
     agent.client.agent_send_keys(&agent.info.pane_id, &keys).await?;
     println!("{}", dim(&format!("✓ option {number} choisie ({})", keys.join(" "))));
@@ -264,7 +264,7 @@ async fn send_message(agent: &Agent, text: &str) -> Result<()> {
     // Fresh status: never type into a pending prompt.
     let current = agent.client.agent_get(&agent.info.pane_id).await?;
     if current.agent_status.as_str() == "blocked" {
-        println!("{}", yellow("⚠ l'agent attend une réponse : utilise /choice N, /deny <texte> ou /screen"));
+        println!("{}", yellow("⚠ the agent is waiting for an answer: use /choice N, /deny <text> or /screen"));
         return Ok(());
     }
     if current.agent.as_deref() == Some("claude") {
@@ -272,11 +272,11 @@ async fn send_message(agent: &Agent, text: &str) -> Result<()> {
     }
     match agent.client.agent_prompt(&agent.info.pane_id, text).await {
         Ok(_) => {
-            println!("{}", dim("✓ message envoyé"));
+            println!("{}", dim("✓ message sent"));
             Ok(())
         }
         Err(e) if e.code() == Some("agent_blocked") => {
-            println!("{}", yellow("⚠ l'agent attend une réponse : utilise /choice N, /deny <texte> ou /screen"));
+            println!("{}", yellow("⚠ the agent is waiting for an answer: use /choice N, /deny <text> or /screen"));
             Ok(())
         }
         Err(e) => Err(e.into()),
@@ -310,11 +310,11 @@ async fn cmd_watch(target: &str, history: usize) -> Result<()> {
             }
             remember(&mut recent_items, items);
         }
-        None => println!("{}", dim("pas de transcript natif : mode écran (status + /screen)")),
+        None => println!("{}", dim("no native transcript: screen mode (status + /screen)")),
     }
     println!(
         "{}",
-        dim("— en direct. Tape un message + Entrée. Commandes : /stop /screen /choice N /deny <texte> /keys <touches…> /quit —")
+        dim("— live. Type a message + Enter. Commands: /stop /screen /choice N /deny <text> /keys <keys…> /quit —")
     );
     show_attention(&agent, &status, tail.as_ref(), &recent_items).await;
 
@@ -322,7 +322,7 @@ async fn cmd_watch(target: &str, history: usize) -> Result<()> {
         .client
         .subscribe(watch_subscriptions(&pane))
         .await
-        .context("abonnement aux événements Herdr")?;
+        .context("subscribing to Herdr events")?;
     let mut stdin = BufReader::new(tokio::io::stdin()).lines();
     let mut ticker = tokio::time::interval(Duration::from_millis(250));
 
@@ -332,21 +332,21 @@ async fn cmd_watch(target: &str, history: usize) -> Result<()> {
                 let event = match event {
                     Ok(event) => event,
                     Err(e) if e.code() == Some("events_lost") => {
-                        println!("{}", yellow("⚠ événements perdus, resynchronisation"));
+                        println!("{}", yellow("⚠ events lost, resyncing"));
                         let (sub, snapshot) = agent.client.resync(watch_subscriptions(&pane)).await?;
                         subscription = sub;
                         let Some(new) = snapshot.pane_status(&pane) else {
-                            println!("{}", red("■ le pane n'existe plus"));
+                            println!("{}", red("■ the pane no longer exists"));
                             return Ok(());
                         };
                         if new.as_str() != status {
-                            println!("{}", dim(&format!("[{} → {}] (resynchronisé)", status, new.as_str())));
+                            println!("{}", dim(&format!("[{} → {}] (resynced)", status, new.as_str())));
                             status = new.as_str().to_string();
                             show_attention(&agent, &status, tail.as_ref(), &recent_items).await;
                         }
                         continue;
                     }
-                    Err(e) => bail!("flux Herdr interrompu : {e}"),
+                    Err(e) => bail!("Herdr stream interrupted: {e}"),
                 };
                 if event.pane_id() != Some(pane.as_str()) {
                     continue;
@@ -365,7 +365,7 @@ async fn cmd_watch(target: &str, history: usize) -> Result<()> {
                         show_attention(&agent, &status, tail.as_ref(), &recent_items).await;
                     }
                     "pane.exited" | "pane.closed" => {
-                        println!("{}", red("■ le pane s'est terminé"));
+                        println!("{}", red("■ the pane exited"));
                         return Ok(());
                     }
                     _ => {}
@@ -406,7 +406,7 @@ async fn handle_input(agent: &Agent, line: &str) -> Result<bool> {
         "/quit" | "/q" => return Ok(false),
         "/stop" => {
             client.agent_send_keys(pane, &["esc"]).await?;
-            println!("{}", dim("✓ Esc envoyé"));
+            println!("{}", dim("✓ Esc sent"));
         }
         "/screen" => {
             let text = client.agent_read(pane, ReadSource::Visible, None).await?;
@@ -426,12 +426,12 @@ async fn handle_input(agent: &Agent, line: &str) -> Result<bool> {
                 tokio::time::sleep(Duration::from_millis(400)).await;
                 send_message(agent, arg).await?;
             }
-            println!("{}", dim("✓ refusé"));
+            println!("{}", dim("✓ denied"));
         }
         "/keys" => {
             let keys: Vec<&str> = arg.split_whitespace().collect();
             client.agent_send_keys(pane, &keys).await?;
-            println!("{}", dim("✓ touches envoyées"));
+            println!("{}", dim("✓ keys sent"));
         }
         // Anything else, including unknown `/commands`, goes to the agent as-is.
         _ => send_message(agent, line).await?,
@@ -445,11 +445,11 @@ async fn show_attention(agent: &Agent, status: &str, tail: Option<&TranscriptTai
     let attention = classify(status, pending.as_ref().map(|p| p.kind), &items);
     let Attention::Blocked(reason) = attention else {
         if attention == Attention::Done {
-            println!("{}", green("✓ terminé"));
+            println!("{}", green("✓ done"));
         }
         return;
     };
-    println!("{}", yellow(&format!("● BLOQUÉ ({})", attention.label().trim_start_matches("blocked:"))));
+    println!("{}", yellow(&format!("● BLOCKED ({})", attention.label().trim_start_matches("blocked:"))));
     if let Some(p) = &pending {
         println!("{}", yellow(&format!("  en attente : {} {}", p.name, p.summary)));
     }
@@ -457,7 +457,7 @@ async fn show_attention(agent: &Agent, status: &str, tail: Option<&TranscriptTai
         if let Ok(screen) = agent.client.agent_read(&agent.info.pane_id, ReadSource::Visible, None).await {
             print_options(&numbered_options(&screen), "  ");
         }
-        println!("{}", dim(&format!("  → /choice N pour répondre ({reason:?})")));
+        println!("{}", dim(&format!("  → /choice N to answer ({reason:?})")));
     }
 }
 
@@ -467,7 +467,7 @@ async fn show_attention(agent: &Agent, status: &str, tail: Option<&TranscriptTai
 /// transition, with the transcript context needed to tune the Done/Blocked rule.
 async fn cmd_statelog(out: PathBuf) -> Result<()> {
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&out)?;
-    println!("journalisation des transitions dans {} (Ctrl-C pour arrêter)", out.display());
+    println!("logging transitions to {} (Ctrl-C to stop)", out.display());
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(Session, herdr_client::Event)>();
     let mut last_status: HashMap<String, String> = HashMap::new();
@@ -573,7 +573,7 @@ fn render(item: &TimelineItem) {
             println!("{}", indent(text));
         }
         TimelineItem::AssistantMessage { text, timestamp, sidechain, .. } => {
-            let who = if *sidechain { "  sous-agent" } else { "CLAUDE" };
+            let who = if *sidechain { "  sub-agent" } else { "CLAUDE" };
             println!("\n{} {}", magenta(&bold(who)), dim(&time(timestamp)));
             println!("{}", indent(text));
         }
@@ -593,7 +593,7 @@ fn render(item: &TimelineItem) {
             };
             println!("  {} {}", dim(&format!("· {verb:<8}")), truncate(summary, 100));
         }
-        TimelineItem::ToolResult { rejected: true, .. } => println!("  {}", yellow("✗ Refusé")),
+        TimelineItem::ToolResult { rejected: true, .. } => println!("  {}", yellow("✗ Denied")),
         TimelineItem::ToolResult { is_error: true, summary, .. } => {
             println!("  {} {}", red("✗"), dim(&truncate(summary, 100)));
         }
@@ -613,9 +613,9 @@ fn render(item: &TimelineItem) {
         }
         TimelineItem::TurnEnded { duration_ms, .. } => {
             let secs = duration_ms.map(|ms| format!(" ({}s)", ms / 1000)).unwrap_or_default();
-            println!("{}", dim(&format!("  — fin du tour{secs}")));
+            println!("{}", dim(&format!("  — turn ended{secs}")));
         }
-        TimelineItem::AwaySummary { text, .. } => println!("\n{} {}", dim("résumé :"), text),
+        TimelineItem::AwaySummary { text, .. } => println!("\n{} {}", dim("summary:"), text),
         TimelineItem::Notice { text, .. } => println!("{}", dim(&format!("  ({text})"))),
     }
 }
@@ -652,7 +652,7 @@ fn parse_source(s: &str) -> Result<ReadSource> {
         "recent" => ReadSource::Recent,
         "recent_unwrapped" | "recent-unwrapped" => ReadSource::RecentUnwrapped,
         "detection" => ReadSource::Detection,
-        _ => bail!("source inconnue : {s}"),
+        _ => bail!("unknown source: {s}"),
     })
 }
 

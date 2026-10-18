@@ -4,10 +4,10 @@
 #[tokio::main]
 async fn main() {
     let mut args = std::env::args().skip(1);
-    let link = args.next().expect("lien");
+    let link = args.next().expect("link");
     let name = args.next().unwrap_or_else(|| "Huntaway Desktop".into());
-    let payload = huntaway_client::pairing::parse(&link).expect("lien valide");
-    let p = huntaway_client::pairing::pair(&payload, &name).await.expect("appairage");
+    let payload = huntaway_client::pairing::parse(&link).expect("valid link");
+    let p = huntaway_client::pairing::pair(&payload, &name).await.expect("pairing");
     println!(
         "{}",
         serde_json::json!({

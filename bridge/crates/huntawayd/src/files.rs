@@ -132,7 +132,7 @@ pub fn git_status(root: &Path) -> Result<GitStatus, String> {
 pub fn git_diff(root: &Path, path: Option<&str>) -> Result<String, String> {
     if let Some(p) = path {
         if p.contains("..") || p.starts_with('/') {
-            return Err("chemin invalide".into());
+            return Err("invalid path".into());
         }
         let tracked = git(root, &["ls-files", "--error-unmatch", p]).is_ok();
         if !tracked {
@@ -159,7 +159,7 @@ pub fn save_upload(name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
         .collect();
-    let clean = if clean.trim_matches('.').is_empty() { "fichier".to_string() } else { clean };
+    let clean = if clean.trim_matches('.').is_empty() { "file".to_string() } else { clean };
     let path = dir.join(format!("{}-{}", now_secs(), clean));
     std::fs::write(&path, bytes)?;
     prune_uploads(&dir);

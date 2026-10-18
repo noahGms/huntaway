@@ -78,13 +78,13 @@ impl ApiError {
         Self { status, code: code.into(), message: message.into() }
     }
     fn unauthorized() -> Self {
-        Self::new(StatusCode::UNAUTHORIZED, "unauthorized", "token manquant ou révoqué")
+        Self::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or revoked token")
     }
     fn forbidden(permission: &str) -> Self {
-        Self::new(StatusCode::FORBIDDEN, "forbidden", format!("permission requise : {permission}"))
+        Self::new(StatusCode::FORBIDDEN, "forbidden", format!("permission required: {permission}"))
     }
     fn not_found() -> Self {
-        Self::new(StatusCode::NOT_FOUND, "not_found", "agent introuvable")
+        Self::new(StatusCode::NOT_FOUND, "not_found", "agent not found")
     }
 }
 
@@ -167,11 +167,11 @@ struct PairRequest {
 
 async fn pair(State(state): State<Shared>, Json(req): Json<PairRequest>) -> ApiResult<Json<Value>> {
     let Some((device, token)) = state.store.redeem_pairing(&req.code, &req.device_name)? else {
-        return Err(ApiError::new(StatusCode::FORBIDDEN, "invalid_code", "code de pairing invalide ou expiré"));
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "invalid_code", "invalid or expired pairing code"));
     };
     let machine = &state.engine.machine;
     let signed = huntaway_api::pair_signed_message(&req.nonce, &machine.machine_id, &device.id);
-    tracing::info!(device = %device.name, "nouvel appareil appairé");
+    tracing::info!(device = %device.name, "new device paired");
     Ok(Json(json!({
         "device_id": device.id,
         "token": token,
@@ -393,7 +393,7 @@ async fn history_list(State(state): State<Shared>, auth: Auth, Query(p): Query<H
 }
 
 fn history_not_found() -> ApiError {
-    ApiError::new(StatusCode::NOT_FOUND, "not_found", "conversation introuvable")
+    ApiError::new(StatusCode::NOT_FOUND, "not_found", "conversation not found")
 }
 
 async fn history_get(State(state): State<Shared>, auth: Auth, Path(id): Path<String>) -> ApiResult<Json<Value>> {
@@ -498,9 +498,9 @@ struct UploadQuery {
 async fn upload(auth: Auth, Query(q): Query<UploadQuery>, body: Bytes) -> ApiResult<Json<Value>> {
     auth.require("agents.message")?;
     if body.is_empty() {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty_upload", "fichier vide"));
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty_upload", "empty file"));
     }
-    let name = q.name.unwrap_or_else(|| "fichier".into());
+    let name = q.name.unwrap_or_else(|| "file".into());
     let path = tokio::task::spawn_blocking(move || crate::files::save_upload(&name, &body))
         .await
         .map_err(|e| anyhow::anyhow!(e))?
@@ -517,7 +517,7 @@ struct PushBody {
 async fn register_push(State(state): State<Shared>, auth: Auth, Json(body): Json<PushBody>) -> ApiResult<Json<Value>> {
     if let Some(endpoint) = &body.endpoint {
         if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
-            return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_endpoint", "endpoint http(s) attendu"));
+            return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_endpoint", "http(s) endpoint expected"));
         }
     }
     state.store.set_push_endpoint(&auth.0.id, body.endpoint)?;
@@ -695,7 +695,7 @@ async fn serve_terminal(socket: WebSocket, state: Shared, id: String, can_input:
             incoming = rx.next() => match incoming {
                 Some(Ok(Message::Text(text))) => {
                     if !can_input {
-                        let msg = json!({ "type": "error", "code": "forbidden", "message": "permission requise : agents.input" });
+                        let msg = json!({ "type": "error", "code": "forbidden", "message": "permission required: agents.input" });
                         let _ = tx.send(Message::Text(msg.to_string().into())).await;
                         continue;
                     }

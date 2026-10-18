@@ -29,7 +29,7 @@ use crate::auth::{Identity, Store, ALL_PERMISSIONS, DEFAULT_PERMISSIONS, READ_ON
 use crate::config::{state_dir, Config};
 
 #[derive(Parser)]
-#[command(name = "huntawayd", version, about = "Huntaway bridge: pilote tes agents Herdr depuis ton téléphone")]
+#[command(name = "huntawayd", version, about = "Huntaway bridge: drive your Herdr agents from your phone")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -120,9 +120,9 @@ async fn run() -> Result<()> {
     let store = Store::new(dir);
     tokio::spawn(push::run(notifications, store.clone(), identity.machine_id.clone(), presence.clone()));
 
-    info!(machine = %engine.machine.machine_name, id = %engine.machine.machine_id, "huntawayd {} démarré", env!("CARGO_PKG_VERSION"));
+    info!(machine = %engine.machine.machine_name, id = %engine.machine.machine_id, "huntawayd {} started", env!("CARGO_PKG_VERSION"));
     if let Err(e) = store.ensure_local_token() {
-        warn!(error = %e, "token local non créé : l'app desktop devra être appairée");
+        warn!(error = %e, "local token not created: the desktop app will need pairing");
     }
     let listeners = Arc::new(listen::Listeners::default());
     let state = Arc::new(api::AppState { engine, store, identity, history: Default::default(), presence, listeners: listeners.clone() });
@@ -155,7 +155,7 @@ fn pair(full: bool, read_only: bool, as_json: bool, as_link: bool) -> Result<()>
         addresses.insert(1.min(addresses.len()), format!("{dns}:{}", config.port));
     }
     if addresses.is_empty() {
-        eprintln!("⚠ aucune adresse Tailscale ou LAN trouvée : active Tailscale ou mets `lan = true` dans la config");
+        eprintln!("⚠ no Tailscale or LAN address found: start Tailscale or set `lan = true` in the config");
     }
     let payload = json!({
         "v": 1,
@@ -173,13 +173,13 @@ fn pair(full: bool, read_only: bool, as_json: bool, as_link: bool) -> Result<()>
     let link = format!("{}{}", huntaway_api::PAIR_LINK_PREFIX, URL_SAFE_NO_PAD.encode(text.as_bytes()));
     if as_link {
         println!("{link}");
-        eprintln!("Colle ce lien dans Huntaway Desktop → Ajouter une machine (valable 5 minutes).");
+        eprintln!("Paste this link in Huntaway Desktop → Add a machine (valid for 5 minutes).");
         if !daemon_reachable(config.port) {
-            eprintln!("⚠ huntawayd ne tourne pas : lance `huntawayd run` ou `huntawayd service install --start`");
+            eprintln!("⚠ huntawayd is not running: start `huntawayd run` or `huntawayd service install --start`");
         }
         return Ok(());
     }
-    let qr = qrcode::QrCode::new(text.as_bytes()).context("génération du QR code")?;
+    let qr = qrcode::QrCode::new(text.as_bytes()).context("generating the QR code")?;
     let image = qr
         .render::<qrcode::render::unicode::Dense1x2>()
         .dark_color(qrcode::render::unicode::Dense1x2::Light)
@@ -187,13 +187,13 @@ fn pair(full: bool, read_only: bool, as_json: bool, as_link: bool) -> Result<()>
         .quiet_zone(true)
         .build();
     println!("{image}");
-    println!("Scanne ce QR code avec Huntaway (valable 5 minutes).");
-    println!("Machine : {}  ·  adresses : {}", config.machine_name, addresses.join(", "));
-    println!("Empreinte : {}", identity.fingerprint());
-    println!("\nSaisie manuelle :\n{text}");
-    println!("\nLien pour l'app desktop :\n{link}");
+    println!("Scan this QR code with Huntaway (valid for 5 minutes).");
+    println!("Machine: {}  ·  addresses: {}", config.machine_name, addresses.join(", "));
+    println!("Fingerprint: {}", identity.fingerprint());
+    println!("\nManual entry:\n{text}");
+    println!("\nLink for the desktop app:\n{link}");
     if !daemon_reachable(config.port) {
-        eprintln!("\n⚠ huntawayd ne tourne pas : lance `huntawayd run` ou `huntawayd service install --start`");
+        eprintln!("\n⚠ huntawayd is not running: start `huntawayd run` or `huntawayd service install --start`");
     }
     Ok(())
 }
@@ -204,10 +204,10 @@ fn devices(action: DevicesAction) -> Result<()> {
         DevicesAction::List => {
             let devices = store.devices()?.devices;
             if devices.is_empty() {
-                println!("aucun appareil appairé (`huntawayd pair`)");
+                println!("no paired device (`huntawayd pair`)");
             }
             for d in devices {
-                let seen = d.last_seen.map(|t| format!("vu il y a {}", ago(t))).unwrap_or_else(|| "jamais vu".into());
+                let seen = d.last_seen.map(|t| format!("seen {} ago", ago(t))).unwrap_or_else(|| "never seen".into());
                 let push = if d.push_endpoint.is_some() { " · push ✓" } else { "" };
                 let push = if d.local_only { " · local (127.0.0.1)" } else { push };
                 println!("{}  {:<20} {}{}  [{}]", d.id, d.name, seen, push, d.permissions.join(", "));
@@ -215,9 +215,9 @@ fn devices(action: DevicesAction) -> Result<()> {
         }
         DevicesAction::Revoke { id } => {
             if store.revoke(&id)? {
-                println!("✓ appareil {id} révoqué");
+                println!("✓ device {id} revoked");
             } else {
-                bail!("appareil inconnu : {id}");
+                bail!("unknown device: {id}");
             }
         }
     }
@@ -230,31 +230,31 @@ fn ago(t: u64) -> String {
         0..=59 => format!("{s} s"),
         60..=3599 => format!("{} min", s / 60),
         3600..=86399 => format!("{} h", s / 3600),
-        _ => format!("{} j", s / 86400),
+        _ => format!("{} d", s / 86400),
     }
 }
 
 async fn status() -> Result<()> {
     let config = Config::load()?;
     println!(
-        "huntawayd : {}",
-        if daemon_reachable(config.port) { format!("en marche (port {})", config.port) } else { "arrêté".into() }
+        "huntawayd: {}",
+        if daemon_reachable(config.port) { format!("running (port {})", config.port) } else { "stopped".into() }
     );
-    println!("adresses : {}", config.listen_addrs().iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", "));
+    println!("addresses: {}", config.listen_addrs().iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", "));
     let sessions = herdr_client::discover_live_sessions().await;
     if sessions.is_empty() {
-        println!("herdr : aucune session active");
+        println!("herdr: no running session");
     }
     for (session, pong) in sessions {
         let client = herdr_client::Client::new(&session.socket);
         let agents = client.agent_list().await.unwrap_or_default();
-        println!("herdr : session {} (v{}, protocole {}) · {} agents", session.name, pong.version, pong.protocol, agents.len());
+        println!("herdr: session {} (v{}, protocol {}) · {} agents", session.name, pong.version, pong.protocol, agents.len());
         if pong.protocol != engine::TESTED_HERDR_PROTOCOL {
-            println!("  ⚠ protocole Herdr {} non testé (testé : {})", pong.protocol, engine::TESTED_HERDR_PROTOCOL);
+            println!("  ⚠ untested Herdr protocol {} (tested: {})", pong.protocol, engine::TESTED_HERDR_PROTOCOL);
         }
         let missing = agents.iter().filter(|a| a.agent.as_deref() == Some("claude") && a.agent_session.is_none()).count();
         if missing > 0 {
-            println!("  ⚠ {missing} agent(s) Claude sans identifiant de session : lance `herdr integration install claude` puis redémarre-les");
+            println!("  ⚠ {missing} Claude agent(s) without a session id: run `herdr integration install claude`, then restart them");
         }
     }
     // API contract: every Herdr method Huntaway uses must exist in this Herdr.
@@ -266,15 +266,15 @@ async fn status() -> Result<()> {
             Ok(schema) => {
                 let missing = herdr_client::missing_methods(&schema);
                 if missing.is_empty() {
-                    println!("api herdr : compatible ({} méthodes utilisées présentes)", herdr_client::USED_METHODS.len());
+                    println!("herdr api: compatible ({} used methods present)", herdr_client::USED_METHODS.len());
                 } else {
-                    println!("  ⚠ api herdr : méthodes absentes : {}", missing.join(", "));
+                    println!("  ⚠ herdr api: missing methods: {}", missing.join(", "));
                 }
             }
-            Err(_) => println!("  ⚠ api herdr : schéma illisible"),
+            Err(_) => println!("  ⚠ herdr api: unreadable schema"),
         },
-        _ => println!("api herdr : `herdr` introuvable dans le PATH, contrôle du schéma ignoré"),
+        _ => println!("herdr api: `herdr` not found in PATH, schema check skipped"),
     }
-    println!("appareils appairés : {}", Store::open_default().devices()?.devices.len());
+    println!("paired devices: {}", Store::open_default().devices()?.devices.len());
     Ok(())
 }

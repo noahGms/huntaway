@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 const LABEL: &str = "app.huntaway.huntawayd";
 
 fn exe() -> Result<PathBuf> {
-    std::env::current_exe().context("chemin du binaire introuvable")
+    std::env::current_exe().context("cannot find the binary path")
 }
 
 fn home() -> PathBuf {
@@ -62,9 +62,9 @@ pub fn install(start: bool) -> Result<()> {
     let path = unit_path();
     std::fs::create_dir_all(path.parent().unwrap())?;
     std::fs::write(&path, render()?)?;
-    println!("service écrit : {}", path.display());
+    println!("service written: {}", path.display());
     if !start {
-        println!("démarrage : {}", start_hint());
+        println!("start it with: {}", start_hint());
         return Ok(());
     }
     if cfg!(target_os = "macos") {
@@ -79,10 +79,10 @@ pub fn install(start: bool) -> Result<()> {
         let user = std::env::var("USER").unwrap_or_default();
         let linger = Command::new("loginctl").args(["show-user", &user, "-p", "Linger", "--value"]).output();
         if !linger.is_ok_and(|o| o.stdout.starts_with(b"yes")) {
-            println!("astuce : `sudo loginctl enable-linger $USER` garde le service actif sans session ouverte");
+            println!("tip: `sudo loginctl enable-linger $USER` keeps the service running without an open session");
         }
     }
-    println!("✓ huntawayd démarré en service");
+    println!("✓ huntawayd started as a service");
     Ok(())
 }
 
@@ -96,7 +96,7 @@ pub fn uninstall() -> Result<()> {
     if path.exists() {
         std::fs::remove_file(&path)?;
     }
-    println!("✓ service supprimé");
+    println!("✓ service removed");
     Ok(())
 }
 
@@ -115,7 +115,7 @@ fn uid() -> String {
 fn run(cmd: &mut Command) -> Result<()> {
     let status = cmd.status()?;
     if !status.success() {
-        bail!("commande échouée : {:?}", cmd);
+        bail!("command failed: {:?}", cmd);
     }
     Ok(())
 }

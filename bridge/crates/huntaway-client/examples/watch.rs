@@ -14,7 +14,7 @@ async fn main() {
         let mut n = 0;
         while let Some(ev) = rx.recv().await {
             match ev {
-                TerminalEvent::Screen { ansi } => println!("screen: {} octets", ansi.len()),
+                TerminalEvent::Screen { ansi } => println!("screen: {} bytes", ansi.len()),
                 other => println!("{other:?}"),
             }
             n += 1;

@@ -26,6 +26,6 @@ fn main() -> std::io::Result<()> {
             println!("{kind:<11} {}", text.lines().next().unwrap_or("").chars().take(90).collect::<String>());
         }
     }
-    println!("\n{counts:?} · en attente : {}", tail.pending_tool_calls().len());
+    println!("\n{counts:?} · pending: {}", tail.pending_tool_calls().len());
     Ok(())
 }

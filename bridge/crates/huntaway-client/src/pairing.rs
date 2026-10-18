@@ -20,7 +20,7 @@ pub fn parse(input: &str) -> Result<PairingPayload> {
         let encoded = input.strip_prefix(PAIR_LINK_PREFIX).unwrap_or(input);
         URL_SAFE_NO_PAD
             .decode(encoded.trim_end_matches('='))
-            .map_err(|_| Error::Pairing("lien d'appairage invalide".into()))?
+            .map_err(|_| Error::Pairing("invalid pairing link".into()))?
     };
     let payload: PairingPayload =
         serde_json::from_slice(&json).map_err(|_| Error::Pairing("contenu d'appairage invalide".into()))?;
@@ -28,7 +28,7 @@ pub fn parse(input: &str) -> Result<PairingPayload> {
         return Err(Error::Pairing(format!("version d'appairage non prise en charge : {}", payload.v)));
     }
     if payload.addresses.is_empty() {
-        return Err(Error::Pairing("aucune adresse dans le lien : active Tailscale ou `lan = true` sur la machine".into()));
+        return Err(Error::Pairing("no address in the link: start Tailscale or set `lan = true` on the machine".into()));
     }
     Ok(payload)
 }
@@ -102,19 +102,19 @@ pub async fn pair(payload: &PairingPayload, device_name: &str) -> Result<Paired>
 }
 
 fn verify(payload: &PairingPayload, reply: &PairResponse, nonce: &str) -> Result<()> {
-    let key_bytes = STANDARD.decode(&reply.public_key).map_err(|_| Error::Pairing("clé publique invalide".into()))?;
+    let key_bytes = STANDARD.decode(&reply.public_key).map_err(|_| Error::Pairing("invalid public key".into()))?;
     if fingerprint(&key_bytes) != payload.fingerprint {
-        return Err(Error::Pairing("empreinte différente de celle du lien : machine non vérifiée".into()));
+        return Err(Error::Pairing("fingerprint differs from the link: machine not verified".into()));
     }
     if reply.machine_id != payload.machine_id {
         return Err(Error::Pairing("identifiant de machine inattendu".into()));
     }
-    let key_bytes: [u8; 32] = key_bytes.try_into().map_err(|_| Error::Pairing("clé publique invalide".into()))?;
-    let key = VerifyingKey::from_bytes(&key_bytes).map_err(|_| Error::Pairing("clé publique invalide".into()))?;
+    let key_bytes: [u8; 32] = key_bytes.try_into().map_err(|_| Error::Pairing("invalid public key".into()))?;
+    let key = VerifyingKey::from_bytes(&key_bytes).map_err(|_| Error::Pairing("invalid public key".into()))?;
     let sig_bytes = STANDARD.decode(&reply.signature).map_err(|_| Error::Pairing("signature invalide".into()))?;
     let sig = Signature::from_slice(&sig_bytes).map_err(|_| Error::Pairing("signature invalide".into()))?;
     let message = pair_signed_message(nonce, &reply.machine_id, &reply.device_id);
-    key.verify(message.as_bytes(), &sig).map_err(|_| Error::Pairing("signature de la machine invalide".into()))
+    key.verify(message.as_bytes(), &sig).map_err(|_| Error::Pairing("invalid machine signature".into()))
 }
 
 #[cfg(test)]

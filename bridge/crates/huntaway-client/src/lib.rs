@@ -26,9 +26,9 @@ pub enum Error {
     #[error("{message}")]
     Api { status: u16, code: String, message: String },
     /// No address answered.
-    #[error("machine injoignable : {0}")]
+    #[error("machine unreachable: {0}")]
     Unreachable(String),
-    #[error("réponse invalide : {0}")]
+    #[error("invalid response: {0}")]
     Decode(String),
     #[error("{0}")]
     Pairing(String),
@@ -67,7 +67,7 @@ impl Client {
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .build()
-            .expect("client http");
+            .expect("http client");
         Self { http, addresses: Arc::new(addresses), token: Arc::new(token), active: Arc::new(Mutex::new(0)) }
     }
 
@@ -104,7 +104,7 @@ impl Client {
     }
 
     async fn send(&self, method: Method, path: &str, body: Option<Body>) -> Result<Value> {
-        let mut last = String::from("aucune adresse");
+        let mut last = String::from("no address");
         for (index, addr) in self.ordered() {
             let url = format!("http://{addr}{path}");
             let mut req = self.http.request(method.clone(), &url).bearer_auth(self.token.as_str());
@@ -116,7 +116,7 @@ impl Client {
             let resp = match req.send().await {
                 Ok(r) => r,
                 Err(e) if e.is_connect() || (e.is_timeout() && !e.is_body()) => {
-                    last = format!("{addr} : {e}");
+                    last = format!("{addr}: {e}");
                     continue;
                 }
                 Err(e) => return Err(Error::Unreachable(e.to_string())),
@@ -132,7 +132,7 @@ impl Client {
                 Err(_) => Error::Api {
                     status: status.as_u16(),
                     code: "http_error".into(),
-                    message: format!("HTTP {status} : {}", String::from_utf8_lossy(&bytes).chars().take(200).collect::<String>()),
+                    message: format!("HTTP {status}: {}", String::from_utf8_lossy(&bytes).chars().take(200).collect::<String>()),
                 },
             });
         }
@@ -163,7 +163,7 @@ impl Client {
     pub async fn upload(&self, name: &str, bytes: Vec<u8>) -> Result<String> {
         let path = format!("/v1/uploads?name={}", urlencoding::encode(name));
         let v = self.send(Method::POST, &path, Some(Body::Bytes(bytes))).await?;
-        v["path"].as_str().map(str::to_string).ok_or_else(|| Error::Decode("chemin absent".into()))
+        v["path"].as_str().map(str::to_string).ok_or_else(|| Error::Decode("missing path".into()))
     }
 
     /// Percent-encodes a path segment (agent ids contain `:`).

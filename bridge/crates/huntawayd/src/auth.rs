@@ -78,7 +78,7 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
 
 fn read_json<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> Result<T> {
     match std::fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text).with_context(|| format!("fichier invalide : {}", path.display())),
+        Ok(text) => serde_json::from_str(&text).with_context(|| format!("invalid file: {}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
         Err(e) => Err(e.into()),
     }
@@ -105,7 +105,7 @@ impl Identity {
             let bytes: [u8; 32] = STANDARD
                 .decode(&file.signing_key)?
                 .try_into()
-                .map_err(|_| anyhow::anyhow!("clé invalide dans {}", path.display()))?;
+                .map_err(|_| anyhow::anyhow!("invalid key in {}", path.display()))?;
             return Ok(Self { machine_id: file.machine_id, key: SigningKey::from_bytes(&bytes) });
         }
         let key = SigningKey::generate(&mut rand::rngs::OsRng);

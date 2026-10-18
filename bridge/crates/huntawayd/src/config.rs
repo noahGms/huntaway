@@ -58,7 +58,7 @@ impl Config {
             return Ok(Self::default());
         }
         let text = std::fs::read_to_string(&path)?;
-        toml::from_str(&text).with_context(|| format!("config invalide : {}", path.display()))
+        toml::from_str(&text).with_context(|| format!("invalid config: {}", path.display()))
     }
 
     /// Addresses to bind and to advertise in the pairing QR code.
