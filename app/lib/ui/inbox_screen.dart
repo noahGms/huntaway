@@ -90,10 +90,11 @@ class _InboxScreenState extends State<InboxScreen> {
         ],
       ),
       body: RefreshIndicator(
-        onRefresh: () async => model.reconnectAll(),
-        child: ListView(
-          padding: const EdgeInsets.only(bottom: 32),
-          children: [
+        // Stays until the machines answered (or gave up).
+        onRefresh: model.refresh,
+        child: Builder(builder: (context) {
+          // Built lazily, a section at a time.
+          final rows = <Widget>[
             if (model.multiMachine)
               _MachineFilter(
                 connections: model.connections,
@@ -109,26 +110,33 @@ class _InboxScreenState extends State<InboxScreen> {
               _SectionHeader('Needs you', blocked.length, color: HuntawayColors.blocked),
               for (final a in blocked)
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                  key: ValueKey(a.key),
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
                   child: BlockedCard(a, machine: machineOf(a)),
                 ),
             ],
             if (working.isNotEmpty) ...[
               _SectionHeader('Working', working.length),
-              _Group([for (final a in working) AgentRow(a, machine: machineOf(a))]),
+              _Group([for (final a in working) AgentRow(a, key: ValueKey(a.key), machine: machineOf(a))]),
             ],
             if (done.isNotEmpty) ...[
               _SectionHeader('Done', done.length),
-              _Group([for (final a in done) AgentRow(a, machine: machineOf(a))]),
+              _Group([for (final a in done) AgentRow(a, key: ValueKey(a.key), machine: machineOf(a))]),
             ],
             if (idle.isNotEmpty) ...[
               _SectionHeader('Idle', idle.length,
                   expanded: _showIdle, onTap: () => setState(() => _showIdle = !_showIdle)),
               if (_showIdle || _search.text.isNotEmpty)
-                _Group([for (final a in idle) AgentRow(a, machine: machineOf(a))]),
+                _Group([for (final a in idle) AgentRow(a, key: ValueKey(a.key), machine: machineOf(a))]),
             ],
-          ],
-        ),
+          ];
+          return ListView.builder(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.only(bottom: 24),
+            itemCount: rows.length,
+            itemBuilder: (context, i) => rows[i],
+          );
+        }),
       ),
     );
   }
@@ -202,7 +210,7 @@ class _SectionHeader extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
+        padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
         child: Row(children: [
           Text(title.toUpperCase(),
               style: TextStyle(color: c, fontWeight: FontWeight.w600, fontSize: 12, letterSpacing: 0.8)),
@@ -225,12 +233,12 @@ class _Group extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
         child: Card(
           clipBehavior: Clip.antiAlias,
           child: Column(children: [
             for (var i = 0; i < children.length; i++) ...[
-              if (i > 0) const Divider(indent: 50),
+              if (i > 0) const Divider(indent: 46),
               children[i],
             ],
           ]),
@@ -290,9 +298,9 @@ class AgentRow extends StatelessWidget {
     return InkWell(
       onTap: () => openAgent(context, agent),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 11, 14, 11),
+        padding: const EdgeInsets.fromLTRB(10, 8, 12, 8),
         child: Row(children: [
-          AgentAvatar(agent.kind, size: 28),
+          AgentAvatar(agent.kind, size: 26),
           const SizedBox(width: 10),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -300,7 +308,7 @@ class AgentRow extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 14.5)),
-              const SizedBox(height: 2),
+              const SizedBox(height: 1),
               Text(agentSubtitle(agent, machine: machine),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -317,7 +325,7 @@ class AgentRow extends StatelessWidget {
           Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
             Text(relativeTime(agent.lastActivityAt),
                 style: const TextStyle(color: HuntawayColors.muted, fontSize: 12, fontFeatures: [FontFeature.tabularFigures()])),
-            const SizedBox(height: 4),
+            const SizedBox(height: 2),
             StatusDot(agent.attention, size: 7),
           ]),
         ]),
@@ -343,11 +351,7 @@ class _BlockedCardState extends State<BlockedCard> {
     setState(() => _busy = true);
     HapticFeedback.mediumImpact();
     try {
-      if (number == null) {
-        await c.client.deny(widget.agent.id, null);
-      } else {
-        await c.client.choose(widget.agent.id, number);
-      }
+      await c.answer(widget.agent, number: number);
     } catch (e) {
       if (mounted) showError(context, e);
     } finally {
@@ -362,6 +366,9 @@ class _BlockedCardState extends State<BlockedCard> {
     final i = agent.interaction;
     final approval = i != null && i.reason == 'approval' && i.options.isNotEmpty;
     final canAnswer = approval && c != null && c.machine.can('agents.approve') && c.status == ConnectionStatus.online;
+    // Off until the agent shows another prompt, so a second tap can't
+    // answer the next one.
+    final busy = _busy || (c?.answered(agent) ?? false);
     final command = i?.tool == null
         ? null
         : (i!.tool!.input['command'] as String?) ?? (i.tool!.input['file_path'] as String?) ?? i.tool!.summary;
@@ -371,84 +378,78 @@ class _BlockedCardState extends State<BlockedCard> {
       Interaction(reason: 'plan') => ('Plan to review', agent.summary),
       _ => ('Waiting for your answer', agent.summary.isEmpty ? null : agent.summary),
     };
+    const dense = EdgeInsets.symmetric(vertical: 7);
+    const denseSize = Size(0, 36);
 
     return Material(
       color: HuntawayColors.surface,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
         side: BorderSide(color: HuntawayColors.blocked.withValues(alpha: 0.45)),
       ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: () => openAgent(context, agent),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+          padding: const EdgeInsets.fromLTRB(12, 9, 12, 10),
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             Row(children: [
-              AgentAvatar(agent.kind, size: 22),
+              AgentAvatar(agent.kind, size: 20),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(heading,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: HuntawayColors.blocked, fontSize: 13, fontWeight: FontWeight.w600)),
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(agentSubtitle(agent, machine: widget.machine),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: HuntawayColors.muted, fontSize: 12.5)),
+                    style: const TextStyle(color: HuntawayColors.muted, fontSize: 12)),
               ),
+              const SizedBox(width: 6),
               Text(relativeTime(agent.lastActivityAt),
                   style: const TextStyle(color: HuntawayColors.muted, fontSize: 12)),
             ]),
-            const SizedBox(height: 10),
-            Text(heading,
-                style: const TextStyle(color: HuntawayColors.blocked, fontSize: 13, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 4),
-            if (command != null && approval)
+            if (command != null && approval) ...[
+              const SizedBox(height: 6),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                 decoration: BoxDecoration(
                   color: HuntawayColors.background,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Text(command, maxLines: 3, overflow: TextOverflow.ellipsis, style: mono),
-              )
-            else if (body != null)
+                child: Text(command, maxLines: 2, overflow: TextOverflow.ellipsis, style: mono),
+              ),
+            ] else if (body != null) ...[
+              const SizedBox(height: 4),
               Text(body,
-                  maxLines: 3,
+                  maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500, height: 1.35)),
-            const SizedBox(height: 12),
-            if (canAnswer)
+                  style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w500, height: 1.3)),
+            ],
+            if (canAnswer) ...[
+              const SizedBox(height: 8),
               Row(children: [
                 Expanded(
                   child: OutlinedButton(
-                    style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 10)),
-                    onPressed: _busy
-                        ? null
-                        : () => _choose(c, i.options.length > 1 ? i.options.last.number : null),
+                    style: OutlinedButton.styleFrom(padding: dense, minimumSize: denseSize),
+                    onPressed: busy ? null : () => _choose(c, i.options.length > 1 ? i.options.last.number : null),
                     child: const Text('Deny'),
                   ),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 8),
                 Expanded(
                   child: FilledButton(
-                    style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 10)),
-                    onPressed: _busy ? null : () => _choose(c, i.options.first.number),
+                    style: FilledButton.styleFrom(padding: dense, minimumSize: denseSize),
+                    onPressed: busy ? null : () => _choose(c, i.options.first.number),
                     child: const Text('Approve'),
                   ),
                 ),
-              ])
-            else
-              Align(
-                alignment: Alignment.centerLeft,
-                child: FilledButton.tonalIcon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: HuntawayColors.surfaceHigh,
-                    foregroundColor: HuntawayColors.text,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                  ),
-                  onPressed: () => openAgent(context, agent),
-                  icon: const Icon(Icons.reply_rounded, size: 18),
-                  label: const Text('Reply'),
-                ),
-              ),
+              ]),
+            ],
           ]),
         ),
       ),
