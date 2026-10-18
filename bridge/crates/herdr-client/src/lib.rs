@@ -5,8 +5,10 @@
 //! Plain calls use one short-lived connection each; subscriptions keep a
 //! dedicated connection open.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -27,6 +29,9 @@ pub enum Error {
     Herdr { code: String, message: String },
     #[error("connection closed")]
     Closed,
+    /// Herdr did not answer in time (frozen session).
+    #[error("herdr did not answer within {0:?}")]
+    Timeout(Duration),
     #[error("unexpected response: {0}")]
     Unexpected(String),
 }
@@ -231,6 +236,16 @@ pub fn missing_methods(schema: &Value) -> Vec<&'static str> {
     USED_METHODS.iter().copied().filter(|m| !known.contains(m)).collect()
 }
 
+/// A plain call that takes longer than this means the Herdr server is stuck:
+/// fail instead of freezing the caller.
+pub const CALL_TIMEOUT: Duration = Duration::from_secs(5);
+/// `agent.start` waits up to its own `timeout_ms` (60 s) for the agent.
+const AGENT_START_TIMEOUT: Duration = Duration::from_secs(65);
+
+async fn with_timeout<T>(limit: Duration, fut: impl Future<Output = Result<T>>) -> Result<T> {
+    tokio::time::timeout(limit, fut).await.unwrap_or(Err(Error::Timeout(limit)))
+}
+
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 fn next_id() -> String {
@@ -273,8 +288,16 @@ impl Client {
         &self.socket
     }
 
-    /// Sends one request and returns its `result`.
+    /// Sends one request and returns its `result`, failing after [`CALL_TIMEOUT`].
     pub async fn call(&self, method: &str, params: Value) -> Result<Value> {
+        self.call_within(CALL_TIMEOUT, method, params).await
+    }
+
+    async fn call_within(&self, limit: Duration, method: &str, params: Value) -> Result<Value> {
+        with_timeout(limit, self.call_raw(method, params)).await
+    }
+
+    async fn call_raw(&self, method: &str, params: Value) -> Result<Value> {
         let mut stream = UnixStream::connect(&self.socket).await?;
         let id = next_id();
         send_request(&mut stream, &id, method, params).await?;
@@ -379,17 +402,18 @@ impl Client {
     /// Fails with `agent_not_ready` when the agent is blocked at startup
     /// (trust dialog…): it is running, but waiting for an answer.
     pub async fn agent_start(&self, name: &str, kind: &str, pane_id: &str, args: &[String]) -> Result<AgentInfo> {
-        self.call_field(
-            "agent.start",
-            json!({ "name": name, "kind": kind, "pane_id": pane_id, "args": args, "timeout_ms": 60000 }),
-            "agent",
-        )
-        .await
+        let params = json!({ "name": name, "kind": kind, "pane_id": pane_id, "args": args, "timeout_ms": 60000 });
+        let mut result = self.call_within(AGENT_START_TIMEOUT, "agent.start", params).await?;
+        Ok(serde_json::from_value(result["agent"].take())?)
     }
 
     /// Opens a subscription. `subscriptions` follows Herdr's `Subscription`
     /// schema; `pane.agent_status_changed` requires a `pane_id`.
     pub async fn subscribe(&self, subscriptions: Vec<Value>) -> Result<Subscription> {
+        with_timeout(CALL_TIMEOUT, self.subscribe_raw(subscriptions)).await
+    }
+
+    async fn subscribe_raw(&self, subscriptions: Vec<Value>) -> Result<Subscription> {
         let mut stream = UnixStream::connect(&self.socket).await?;
         let id = next_id();
         send_request(&mut stream, &id, "events.subscribe", json!({ "subscriptions": subscriptions })).await?;
@@ -551,6 +575,24 @@ mod tests {
         let (_sub, snapshot) = client.resync(subs).await.unwrap();
         assert_eq!(snapshot.pane_status("w1:p1"), Some(AgentStatus::Blocked));
         assert_eq!(snapshot.pane_status("w9:p9"), None);
+    }
+
+    #[tokio::test]
+    async fn frozen_server_times_out() {
+        let dir = std::env::temp_dir().join(format!("herdr-frozen-{}-{}", std::process::id(), next_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("herdr.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        // Accepts and never answers.
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        let client = Client::new(&socket);
+        let err = client.call_within(Duration::from_millis(100), "ping", json!({})).await.err().unwrap();
+        assert!(matches!(err, Error::Timeout(_)));
     }
 
     #[test]
