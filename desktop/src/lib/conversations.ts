@@ -223,7 +223,9 @@ export function buildSidebarRows(list: Conversation[], opts: SidebarOptions): Si
   const multi = opts.machines.length > 1;
   const inactive = inactiveProjects(list, opts.favorites, opts.inactiveDays, now);
   const visible = opts.showInactive || !inactive.size ? list : list.filter((c) => !inactive.has(projectKey(c.machineId, c.project)));
-  const suffix = (c: Conversation) => (multi ? `${c.project} · ${c.machineName}` : c.project);
+  // Project (and machine) suffix, unless everything shown shares them.
+  const oneProject = !multi && new Set(visible.map((c) => c.project)).size <= 1;
+  const suffix = (c: Conversation) => (oneProject ? undefined : multi ? `${c.project} · ${c.machineName}` : c.project);
   const rows: SidebarRow[] = [];
 
   const waiting = visible.filter(isWaiting);

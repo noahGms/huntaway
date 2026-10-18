@@ -75,7 +75,7 @@ export function Sidebar() {
     if (grouping === "project") prefs.expand([`m:${selectedConv.machineId}`, `p:${projectKey(selectedConv.machineId, selectedConv.project)}`]);
   }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    const index = rows.findIndex((r) => r.type === "conv" && r.conv.key === selected && !r.id.startsWith("w-"));
+    const index = rows.findIndex((r) => r.type === "conv" && r.conv.key === selected);
     if (index !== -1) list.current?.scrollIntoView({ index, behavior: "auto" });
   }, [selected, rows.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -92,7 +92,7 @@ export function Sidebar() {
       <div className={`drag flex h-[52px] shrink-0 items-center gap-2 pr-2 ${isMac ? "pl-[86px]" : "pl-3"}`}>
         <div className="no-drag flex min-w-0 items-center gap-2">
           <Logo size={22} />
-          <span className={`truncate text-[14px] font-semibold tracking-tight ${isMac ? "hidden @[300px]:inline" : ""}`}>Huntaway</span>
+          <span className={`truncate text-[14px] font-semibold tracking-tight ${isMac ? "hidden @min-[300px]:inline" : ""}`}>Huntaway</span>
         </div>
         <div className="no-drag ml-auto flex items-center gap-0.5">
           {nav.map((n) => (
@@ -264,7 +264,7 @@ const ConversationRow = memo(function ConversationRow({ conv, active, depth, suf
           <StatusDot attention={conv.attention} size={7} />
         </span>
         <span className={`min-w-0 flex-1 truncate text-[13px] leading-5 ${conv.live ? (active ? "text-text" : "text-[#d9d5ce]") : "text-muted"}`}>{conv.title}</span>
-        {suffix && <span className="min-w-0 max-w-[45%] shrink truncate text-[11px] text-faint">{suffix}</span>}
+        {suffix && <span className="min-w-0 max-w-[40%] shrink truncate text-[11px] text-faint">{suffix}</span>}
         <span className={`w-8 shrink-0 text-right text-[11px] tabular-nums ${blocked ? "text-blocked" : "text-faint"}`}>{compactAge(conv.lastActivity)}</span>
       </button>
     </div>

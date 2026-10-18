@@ -43,7 +43,7 @@ export function ProjectPage() {
     const seen = new Set(own.map((c) => c.key));
     const running = new Set(own.map((c) => c.agent?.native_session).filter(Boolean));
     const extra: Conversation[] = older
-      .filter((e) => !e.live_agent_id && !running.has(e.session_id))
+      .filter((e) => (e.project || "—") === project.project && !e.live_agent_id && !running.has(e.session_id))
       .map((e) => fromHistory(machine, e))
       .filter((c) => !seen.has(c.key));
     return [...own, ...extra].sort(compareConversations);
