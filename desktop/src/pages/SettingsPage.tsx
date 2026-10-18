@@ -1,26 +1,32 @@
 import { getVersion } from "@tauri-apps/api/app";
-import { relaunch } from "@tauri-apps/plugin-process";
-import { check, type Update } from "@tauri-apps/plugin-updater";
 import { listen } from "@tauri-apps/api/event";
+import { Check, Layers, Plus, Trash2 } from "lucide-react";
 import { app, errorMessage } from "../api/client";
 import { useEffect, useState } from "react";
-import { Button, Kbd } from "../components/ui/Button";
+import { Button, IconButton, Kbd } from "../components/ui/Button";
+import { inputClass } from "../components/ui/Dialog";
 import { Logo } from "../components/ui/Logo";
+import { Menu, MenuItem } from "../components/ui/Menu";
 import { Toggle } from "../components/ui/Toggle";
+import { ALT, MOD, SHIFT } from "../lib/keys";
+import { orderMachines } from "../lib/spaces";
+import { useUpdates } from "../lib/updates";
+import { machineList, useMachines } from "../store/machines";
+import { usePrefs } from "../store/prefs";
 import { useSettings } from "../store/settings";
 import { PageHeader } from "./ServersPage";
 
 const SHORTCUTS: [string[], string][] = [
-  [["⌘", "K"], "Rechercher, aller à une conversation, lancer une action"],
-  [["⌘", "N"], "Nouvelle session"],
-  [["⌘", "."], "Interrompre l'agent affiché"],
-  [["1", "…", "9"], "Choisir une option de la carte d'approbation"],
-  [["Esc"], "Refuser une approbation"],
-  [["⌘", "B"], "Afficher ou masquer la barre latérale"],
-  [["⌘", "⌥", "B"], "Afficher ou masquer le panneau d'activité"],
-  [["⌘", "1/2/3"], "Onglet Détails, Fichiers, Terminal"],
-  [["⌥", "↑/↓"], "Conversation précédente, suivante"],
-  [["⌘", "⇧", "A"], "Aller au prochain agent qui attend"],
+  [[MOD, "K"], "Search, go to a conversation, run an action"],
+  [[MOD, "N"], "New session"],
+  [[MOD, "."], "Stop the agent on screen"],
+  [["1", "…", "9"], "Pick an option of the approval card"],
+  [["Esc"], "Deny an approval"],
+  [[MOD, "B"], "Show or hide the sidebar"],
+  [[MOD, ALT, "B"], "Show or hide the activity panel"],
+  [[MOD, "1/2/3"], "Details, Files, Terminal tab"],
+  [[ALT, "↑/↓"], "Previous, next conversation"],
+  [[MOD, SHIFT, "A"], "Go to the next waiting agent"],
 ];
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -33,22 +39,20 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 function Updates() {
-  const [state, setState] = useState<{ step: "idle" | "checking" | "none" | "available" | "installing" | "error"; update?: Update; error?: string }>({ step: "idle" });
+  const { ready, checking, checkNow, restart } = useUpdates();
+  const [state, setState] = useState<{ step: "idle" | "none" | "installing" | "error"; error?: string }>({ step: "idle" });
   const run = async () => {
-    setState({ step: "checking" });
     try {
-      const update = await check();
-      setState(update ? { step: "available", update } : { step: "none" });
+      const version = await checkNow();
+      setState({ step: version ? "idle" : "none" });
     } catch (e) {
       setState({ step: "error", error: errorMessage(e) });
     }
   };
   const install = async () => {
-    if (!state.update) return;
-    setState({ ...state, step: "installing" });
+    setState({ step: "installing" });
     try {
-      await state.update.downloadAndInstall();
-      await relaunch();
+      await restart();
     } catch (e) {
       setState({ step: "error", error: errorMessage(e) });
     }
@@ -56,18 +60,25 @@ function Updates() {
   return (
     <div className="flex items-center justify-between gap-4 py-3 text-[13px]">
       <span className="text-muted">
-        {state.step === "none" && "Huntaway est à jour."}
-        {state.step === "available" && `Version ${state.update?.version} disponible.`}
-        {state.step === "error" && <span className="text-error">{state.error}</span>}
-        {(state.step === "idle" || state.step === "checking" || state.step === "installing") && "Mises à jour signées, publiées avec les releases."}
+        {state.step === "error" ? (
+          <span className="text-error">{state.error}</span>
+        ) : ready ? (
+          `Version ${ready.version} is downloaded and ready.`
+        ) : checking ? (
+          "Checking…"
+        ) : state.step === "none" ? (
+          "Huntaway is up to date."
+        ) : (
+          "Signed updates, checked every 6 hours."
+        )}
       </span>
-      {state.step === "available" || state.step === "installing" ? (
+      {ready ? (
         <Button size="sm" variant="primary" loading={state.step === "installing"} onClick={() => void install()}>
-          Installer et redémarrer
+          Restart to update
         </Button>
       ) : (
-        <Button size="sm" loading={state.step === "checking"} onClick={() => void run()}>
-          Vérifier les mises à jour
+        <Button size="sm" loading={checking} onClick={() => void run()}>
+          Check for updates
         </Button>
       )}
     </div>
@@ -75,10 +86,10 @@ function Updates() {
 }
 
 const TEST_RESULT: Record<string, string> = {
-  "Approve(1)": "« Approuver » reçu : l'agent aurait reçu l'option 1.",
-  Deny: "« Refuser » reçu : l'agent aurait été refusé.",
-  Open: "Clic reçu : la conversation se serait ouverte.",
-  Nothing: "Notification fermée sans action.",
+  "Approve(1)": "“Approve” received: the agent would have got option 1.",
+  Deny: "“Deny” received: the agent would have been denied.",
+  Open: "Click received: the conversation would have opened.",
+  Nothing: "Notification closed without an action.",
 };
 
 function NotificationTest() {
@@ -89,16 +100,93 @@ function NotificationTest() {
   }, []);
   return (
     <div className="flex items-center justify-between gap-4 py-3 text-[13px]">
-      <span className="text-muted">{result ?? "Affiche une notification d'approbation factice avec ses boutons."}</span>
+      <span className="text-muted">{result ?? "Shows a fake approval notification with its buttons."}</span>
       <Button
         size="sm"
         onClick={() => {
-          setResult("Notification envoyée : clique sur « Approuver » ou « Refuser ».");
-          void app.testNotification();
+          setResult("Notification sent: click “Approve” or “Deny”.");
+          void app.testNotification().catch((e) => setResult(errorMessage(e)));
         }}
       >
-        Tester
+        Test
       </Button>
+    </div>
+  );
+}
+
+/** Machine groups: the spaces offered by the sidebar selector (stored on this computer). */
+function MachineGroups() {
+  const { groups, addGroup, renameGroup, removeGroup, toggleGroupMachine, machineOrder } = usePrefs();
+  const machines = orderMachines(machineList(useMachines((s) => s.machines)), machineOrder);
+  const [name, setName] = useState("");
+  const create = () => {
+    if (!name.trim()) return;
+    addGroup(name.trim());
+    setName("");
+  };
+  return (
+    <>
+      {groups.map((g) => (
+        <div key={g.id} className="flex items-center gap-2 py-2.5 text-[13px]">
+          <Layers size={14} className="shrink-0 text-faint" />
+          <input
+            defaultValue={g.name}
+            onBlur={(e) => e.target.value.trim() && renameGroup(g.id, e.target.value.trim())}
+            onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+            className="min-w-0 flex-1 rounded-md bg-transparent px-1 py-0.5 text-text hover:bg-surface-high focus:bg-bg focus:outline-none"
+            aria-label="Group name"
+          />
+          <Menu
+            trigger={
+              <button className="max-w-[260px] truncate rounded-md px-2 py-0.5 text-[12px] text-muted hover:bg-surface-high hover:text-text">
+                {g.machineIds.filter((id) => machines.some((m) => m.record.machine_id === id)).length} machine(s)
+              </button>
+            }
+          >
+            {machines.length === 0 && <div className="px-2.5 py-1.5 text-[12px] text-faint">No machine yet.</div>}
+            {machines.map((m) => (
+              <MenuItem key={m.record.machine_id} onSelect={() => toggleGroupMachine(g.id, m.record.machine_id)}>
+                <span className="truncate">{m.record.name}</span>
+                {g.machineIds.includes(m.record.machine_id) && <Check size={13} className="ml-auto text-muted" />}
+              </MenuItem>
+            ))}
+          </Menu>
+          <IconButton label="Delete group" onClick={() => removeGroup(g.id)} className="h-6 w-6">
+            <Trash2 size={13} />
+          </IconButton>
+        </div>
+      ))}
+      <form
+        className="flex items-center gap-2 py-2.5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          create();
+        }}
+      >
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="New group (Personal, Client X…)" className={`${inputClass} !py-1.5`} />
+        <Button size="sm" type="submit" icon={<Plus size={13} />} disabled={!name.trim()}>
+          Add
+        </Button>
+      </form>
+    </>
+  );
+}
+
+function InactiveDays() {
+  const { inactiveDays, setInactiveDays } = usePrefs();
+  return (
+    <div className="flex items-center justify-between gap-4 py-2.5 text-[13px]">
+      <span>
+        <span className="block text-text">Hide inactive projects</span>
+        <span className="mt-0.5 block text-[12px] text-muted">Projects without a running agent or recent activity. Favorites always stay.</span>
+      </span>
+      <select value={inactiveDays} onChange={(e) => setInactiveDays(Number(e.target.value))} className={`${inputClass} !w-[140px] shrink-0 !py-1.5`}>
+        <option value={0}>Never</option>
+        <option value={3}>After 3 days</option>
+        <option value={7}>After 7 days</option>
+        <option value={14}>After 14 days</option>
+        <option value={30}>After 30 days</option>
+      </select>
     </div>
   );
 }
@@ -107,26 +195,32 @@ export function SettingsPage() {
   const { settings, update } = useSettings();
   const [version, setVersion] = useState("");
   useEffect(() => {
-    void getVersion().then(setVersion);
+    void getVersion().then(setVersion).catch(() => {});
   }, []);
   return (
     <div className="flex h-full flex-col">
-      <PageHeader title="Paramètres" />
+      <PageHeader title="Settings" />
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
         <div className="mx-auto max-w-[640px]">
-          <Section title="Général">
-            <Toggle checked={settings.keep_in_tray} onChange={(v) => void update({ keep_in_tray: v })} label="Garder dans la barre des menus" description="Fermer la fenêtre laisse Huntaway actif pour recevoir les notifications." />
-            <Toggle checked={settings.enter_to_send} onChange={(v) => void update({ enter_to_send: v })} label="Envoyer avec Entrée" description={settings.enter_to_send ? "Maj + Entrée pour aller à la ligne." : "⌘ + Entrée pour envoyer."} />
-            <Toggle checked={settings.show_cost} onChange={(v) => void update({ show_cost: v })} label="Afficher le coût estimé" description="Calculé aux prix publics de l'API : un abonnement est facturé autrement." />
+          <Section title="General">
+            <Toggle checked={settings.keep_in_tray} onChange={(v) => void update({ keep_in_tray: v })} label="Keep in the menu bar" description="Closing the window keeps Huntaway running for notifications." />
+            <Toggle checked={settings.enter_to_send} onChange={(v) => void update({ enter_to_send: v })} label="Send with Enter" description={settings.enter_to_send ? "Shift + Enter for a new line." : `${MOD} + Enter to send.`} />
+            <Toggle checked={settings.show_cost} onChange={(v) => void update({ show_cost: v })} label="Show estimated cost" description="Based on public API prices: subscriptions are billed differently." />
+          </Section>
+          <Section title="Sidebar">
+            <InactiveDays />
+          </Section>
+          <Section title="Machine groups">
+            <MachineGroups />
           </Section>
           <Section title="Notifications">
-            <Toggle checked={settings.notify_blocked} onChange={(v) => void update({ notify_blocked: v })} label="Un agent a besoin de moi" description="Approbation, question, plan à valider." />
-            <Toggle checked={settings.notify_done} onChange={(v) => void update({ notify_done: v })} label="Un agent a terminé" />
-            <Toggle checked={settings.notify_error} onChange={(v) => void update({ notify_error: v })} label="Un agent s'est arrêté" />
-            <Toggle checked={settings.notification_sound} onChange={(v) => void update({ notification_sound: v })} label="Son" />
+            <Toggle checked={settings.notify_blocked} onChange={(v) => void update({ notify_blocked: v })} label="An agent needs me" description="Approval, question, plan to review." />
+            <Toggle checked={settings.notify_done} onChange={(v) => void update({ notify_done: v })} label="An agent is done" />
+            <Toggle checked={settings.notify_error} onChange={(v) => void update({ notify_error: v })} label="An agent stopped" />
+            <Toggle checked={settings.notification_sound} onChange={(v) => void update({ notification_sound: v })} label="Sound" />
             <NotificationTest />
           </Section>
-          <Section title="Raccourcis">
+          <Section title="Shortcuts">
             {SHORTCUTS.map(([keys, label]) => (
               <div key={label} className="flex items-center justify-between py-2.5 text-[13px]">
                 <span className="text-muted">{label}</span>
@@ -138,12 +232,12 @@ export function SettingsPage() {
               </div>
             ))}
           </Section>
-          <Section title="À propos">
+          <Section title="About">
             <div className="flex items-center gap-3 py-4">
               <Logo size={40} />
               <div>
                 <div className="text-[14px] font-semibold">Huntaway Desktop</div>
-                <div className="text-[12px] text-muted">Version {version} · pilote tes agents Herdr, en local comme sur tes serveurs.</div>
+                <div className="text-[12px] text-muted">Version {version} · control your Herdr agents, locally and on your servers.</div>
               </div>
             </div>
             <Updates />
