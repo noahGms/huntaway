@@ -1808,6 +1808,7 @@ dependencies = [
  "keyring",
  "mac-notification-sys",
  "notify-rust",
+ "objc2-foundation",
  "serde",
  "serde_json",
  "tauri",

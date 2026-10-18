@@ -3,7 +3,7 @@ name = "huntaway-desktop"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Huntaway Desktop: pilote tous tes agents Herdr, en local comme sur tes serveurs"
+description = "Huntaway Desktop: drive all your Herdr agents, locally and on your servers"
 
 [lib]
 name = "huntaway_desktop_lib"
@@ -39,6 +39,7 @@ strip = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mac-notification-sys = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSUserNotification", "NSArray", "NSString"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4"

@@ -1,7 +1,9 @@
-//! Native notifications with actions: « Approuver » / « Refuser » for a
-//! permission prompt, and a click opens the conversation. macOS goes through
+//! Native notifications with actions: "Approve" / "Deny" for a permission
+//! prompt, and a click opens the conversation. macOS goes through
 //! NSUserNotification, Linux through freedesktop notifications (D-Bus);
 //! elsewhere, or if the system refuses, the Tauri notification plugin is used.
+//! Answers carry the id of the prompt they were shown for: the daemon refuses
+//! them if the agent has moved on to another prompt.
 
 use huntaway_api::{AgentView, Notification};
 use huntaway_client::Client;
@@ -9,10 +11,11 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_notification::NotificationExt;
 
-/// Option chosen by « Approuver »: the first one of the menu (« Yes »).
-pub fn approve_option(agent: Option<&AgentView>) -> Option<u32> {
+/// Option chosen by "Approve": the first one of the menu ("Yes"), only when
+/// the agent still shows the prompt the notification is about.
+pub fn approve_option(agent: Option<&AgentView>, interaction_id: Option<&str>) -> Option<u32> {
     let interaction = agent?.interaction.as_ref()?;
-    if interaction.reason != huntaway_api::BlockedReason::Approval {
+    if interaction.reason != huntaway_api::BlockedReason::Approval || interaction_id != Some(interaction.id.as_str()) || interaction.id.is_empty() {
         return None;
     }
     let first = interaction.options.first()?;
@@ -65,10 +68,12 @@ fn open_conversation(app: &AppHandle, machine_id: &str, agent_id: &str) {
 }
 
 pub fn show(p: Pending) {
+    // A newer notification for the same agent replaces the previous one.
+    dismiss(&p.app, &p.machine_id, &p.notification.agent_id);
     // Waiting for the user's answer blocks: one thread per notification.
     std::thread::spawn(move || {
         if let Err(fallback) = show_native(&p) {
-            tracing::debug!(error = %fallback, "notification native impossible, repli sur le plugin");
+            tracing::debug!(error = %fallback, "native notification failed, using the plugin");
             show_plugin(&p);
         }
     });
@@ -76,16 +81,22 @@ pub fn show(p: Pending) {
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn show_native(_: &Pending) -> Result<(), String> {
-    Err("pas de notifications à actions sur ce système".into())
+    Err("no actionable notifications on this system".into())
 }
+
+#[cfg(not(target_os = "macos"))]
+pub fn dismiss(_: &AppHandle, _: &str, _: &str) {}
+
+#[cfg(not(target_os = "macos"))]
+pub fn dismiss_stale(_: &AppHandle, _: &str, _: &str, _: Option<&str>) {}
 
 #[cfg(target_os = "linux")]
 fn show_native(p: &Pending) -> Result<(), String> {
     let body = format!("{} · {}", p.machine_name, p.notification.body);
     let mut n = notify_rust::Notification::new();
-    n.appname("Huntaway").summary(&p.notification.title).body(&body).action("default", "Ouvrir");
+    n.appname("Huntaway").summary(&p.notification.title).body(&body).action("default", "Open");
     if p.approve.is_some() {
-        n.action("approve", "Approuver").action("deny", "Refuser");
+        n.action("approve", "Approve").action("deny", "Deny");
     }
     if p.sound {
         n.sound_name("message-new-instant");
@@ -113,24 +124,28 @@ fn run(p: &Pending, action: Action) {
     }
     let agent = p.notification.agent_id.clone();
     let path = |a: &str| format!("/v1/agents/{}/{a}", Client::segment(&agent));
+    let interaction_id = p.notification.interaction_id.clone();
+    let answer = |path: String, body: serde_json::Value| {
+        let (client, app, machine_id, agent_id, machine_name) = (p.client.clone(), p.app.clone(), p.machine_id.clone(), agent.clone(), p.machine_name.clone());
+        tauri::async_runtime::spawn(async move {
+            match client.post(&path, body).await {
+                Ok(_) => {}
+                // The notification was about an older prompt: nothing was sent.
+                Err(e) if e.code() == "interaction_changed" => {
+                    show_plain(&app, "The agent is now asking something else", &format!("{machine_name} · Open the conversation to see the new prompt."));
+                    open_conversation(&app, &machine_id, &agent_id);
+                }
+                Err(e) if e.code() == "already_resolved" => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not answer from the notification");
+                    open_conversation(&app, &machine_id, &agent_id);
+                }
+            }
+        });
+    };
     match action {
-        Action::Approve(number) => {
-            let (client, path, app, m, a) = (p.client.clone(), path("choice"), p.app.clone(), p.machine_id.clone(), agent.clone());
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = client.post(&path, json!({ "number": number })).await {
-                    tracing::warn!(error = %e, "approbation depuis la notification impossible");
-                    open_conversation(&app, &m, &a);
-                }
-            });
-        }
-        Action::Deny => {
-            let (client, path) = (p.client.clone(), path("deny"));
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = client.post(&path, json!({})).await {
-                    tracing::warn!(error = %e, "refus depuis la notification impossible");
-                }
-            });
-        }
+        Action::Approve(number) => answer(path("choice"), json!({ "number": number, "interaction_id": interaction_id })),
+        Action::Deny => answer(path("deny"), json!({ "interaction_id": interaction_id })),
         Action::Open => open_conversation(&p.app, &p.machine_id, &agent),
         Action::Nothing => {}
     }
@@ -142,8 +157,60 @@ fn show_plugin(p: &Pending) {
         builder = builder.sound("default");
     }
     if let Err(e) = builder.show() {
-        tracing::warn!(error = %e, "notification impossible");
+        tracing::warn!(error = %e, "notification failed");
     }
+}
+
+/// Notification without actions.
+fn show_plain(app: &AppHandle, title: &str, body: &str) {
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        tracing::warn!(error = %e, "notification failed");
+    }
+}
+
+/// Approval notification still on screen for an agent.
+#[cfg(target_os = "macos")]
+struct Shown {
+    interaction_id: Option<String>,
+    /// Title and text, to find it among the delivered notifications.
+    title: String,
+    message: String,
+}
+
+/// Per agent (`machine/agent`).
+#[cfg(target_os = "macos")]
+fn shown() -> &'static std::sync::Mutex<std::collections::HashMap<String, Shown>> {
+    static SHOWN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Shown>>> = std::sync::OnceLock::new();
+    SHOWN.get_or_init(Default::default)
+}
+
+/// Closes the approval notification of an agent once it no longer shows
+/// the prompt it was about (answered elsewhere, or another prompt).
+#[cfg(target_os = "macos")]
+pub fn dismiss_stale(app: &AppHandle, machine_id: &str, agent_id: &str, current: Option<&str>) {
+    let key = format!("{machine_id}/{agent_id}");
+    let stale = shown().lock().unwrap().get(&key).is_some_and(|s| s.interaction_id.as_deref() != current);
+    if stale {
+        dismiss(app, machine_id, agent_id);
+    }
+}
+
+/// Removes the approval notification of an agent from the notification
+/// center. Its thread, waiting for an answer, then ends (seen as dismissed).
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+pub fn dismiss(app: &AppHandle, machine_id: &str, agent_id: &str) {
+    let Some(Shown { title, message, .. }) = shown().lock().unwrap().remove(&format!("{machine_id}/{agent_id}")) else { return };
+    let _ = app.run_on_main_thread(move || {
+        use objc2_foundation::NSUserNotificationCenter;
+        let center = NSUserNotificationCenter::defaultUserNotificationCenter();
+        for n in center.deliveredNotifications().iter() {
+            let same = n.title().map(|t| t.to_string()) == Some(title.clone()) && n.informativeText().map(|t| t.to_string()) == Some(message.clone());
+            if same {
+                center.removeDeliveredNotification(&n);
+            }
+        }
+    });
 }
 
 #[cfg(target_os = "macos")]
@@ -162,8 +229,11 @@ fn show_native(p: &Pending) -> Result<(), String> {
     if p.sound {
         n.default_sound();
     }
+    let key = format!("{}/{}", p.machine_id, p.notification.agent_id);
     if p.approve.is_some() {
-        n.main_button(MainButton::SingleAction("Approuver")).close_button("Refuser");
+        n.main_button(MainButton::SingleAction("Approve")).close_button("Deny");
+        let entry = Shown { interaction_id: p.notification.interaction_id.clone(), title: p.notification.title.clone(), message: body.clone() };
+        shown().lock().unwrap().insert(key.clone(), entry);
     } else {
         n.wait_for_click(true);
     }
@@ -173,6 +243,12 @@ fn show_native(p: &Pending) -> Result<(), String> {
         NotificationResponse::Click => Response::Click,
         _ => Response::Dismissed,
     };
+    if p.approve.is_some() {
+        let mut shown = shown().lock().unwrap();
+        if shown.get(&key).is_some_and(|s| s.message == body && s.interaction_id == p.notification.interaction_id) {
+            shown.remove(&key);
+        }
+    }
     run(p, action_for(response, p.approve));
     Ok(())
 }
@@ -192,6 +268,7 @@ mod tests {
         let mut a: AgentView = serde_json::from_value(json).unwrap();
         a.attention = Attention::Blocked(reason);
         a.interaction = Some(Interaction {
+            id: "q1".into(),
             reason,
             tool: None,
             questions: vec![],
@@ -205,10 +282,16 @@ mod tests {
 
     #[test]
     fn approve_only_for_yes_permission_prompts() {
-        assert_eq!(approve_option(Some(&agent(BlockedReason::Approval, "Yes"))), Some(1));
-        assert_eq!(approve_option(Some(&agent(BlockedReason::Approval, "No, exit"))), None);
-        assert_eq!(approve_option(Some(&agent(BlockedReason::Question, "Yes"))), None);
-        assert_eq!(approve_option(None), None);
+        assert_eq!(approve_option(Some(&agent(BlockedReason::Approval, "Yes")), Some("q1")), Some(1));
+        assert_eq!(approve_option(Some(&agent(BlockedReason::Approval, "No, exit")), Some("q1")), None);
+        assert_eq!(approve_option(Some(&agent(BlockedReason::Question, "Yes")), Some("q1")), None);
+        assert_eq!(approve_option(None, Some("q1")), None);
+    }
+
+    #[test]
+    fn approve_only_for_the_notified_prompt() {
+        assert_eq!(approve_option(Some(&agent(BlockedReason::Approval, "Yes")), Some("q0")), None);
+        assert_eq!(approve_option(Some(&agent(BlockedReason::Approval, "Yes")), None), None);
     }
 
     #[test]
