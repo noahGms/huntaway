@@ -264,6 +264,138 @@ void main() {
     });
   });
 
+  group('stream item filter', () {
+    late HttpServer server;
+    late List<Uri> streams;
+    late List<Map> messages;
+    late List<String> timelineRequests;
+    late WebSocket? socket;
+    late MachineConnection c;
+
+    Future<void> until(bool Function() done) async {
+      for (var i = 0; i < 200 && !done(); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      expect(done(), isTrue);
+    }
+
+    void event(int seq, String type, String agentId, Map<String, dynamic> data) =>
+        socket!.add(jsonEncode({'seq': seq, 'type': type, 'agent_id': agentId, 'data': data}));
+
+    setUp(() async {
+      streams = [];
+      messages = [];
+      timelineRequests = [];
+      socket = null;
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((r) async {
+        void json(Object body) => r.response
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode(body))
+          ..close();
+        switch (r.uri.path) {
+          case '/healthz':
+            json({'ok': true});
+          case '/v1/state':
+            json({
+              'machine': {'epoch': 'e1', 'machine_name': 'Mac'},
+              'seq': 1,
+              'agents': [
+                {'id': 'a1', 'attention': {'status': 'working'}},
+                {'id': 'a2', 'attention': {'status': 'idle'}},
+              ],
+            });
+          case '/v1/agents/a1/timeline':
+            timelineRequests.add(r.uri.query);
+            json({
+              'items': [
+                for (var n = 0; n < (timelineRequests.length == 1 ? 3 : 6); n++)
+                  {'n': n, 'type': 'assistant_message', 'timestamp': '2026-10-07T20:00:00Z', 'text': '$n'}
+              ],
+              'has_more': false,
+            });
+          case '/v1/stream':
+            streams.add(r.uri);
+            final ws = socket = await WebSocketTransformer.upgrade(r);
+            ws.add(jsonEncode({'type': 'hello', 'epoch': 'e1', 'seq': 1, 'resync_required': false}));
+            ws.listen((m) => messages.add(jsonDecode(m as String) as Map));
+          default:
+            r.response
+              ..statusCode = 404
+              ..close();
+        }
+      });
+      final machine = PairedMachine(
+        machineId: 'm1',
+        name: 'Mac',
+        addresses: ['127.0.0.1:${server.port}'],
+        token: 't',
+        deviceId: 'd1',
+        fingerprint: 'sha256:x',
+      );
+      c = MachineConnection(machine, onNotification: (_) {})..start();
+      await until(() => c.status == ConnectionStatus.online);
+    });
+
+    tearDown(() async {
+      c.dispose();
+      await socket?.close();
+      await server.close(force: true);
+    });
+
+    test('streams no items until a timeline is open', () {
+      expect(streams.single.queryParameters['items'], '');
+    });
+
+    test('follows the open timelines live', () async {
+      c.watch('a1');
+      await until(() => messages.length == 1);
+      expect(messages.last, {
+        'type': 'items',
+        'agent_ids': ['a1']
+      });
+      // A second screen on the same agent changes nothing.
+      c.watch('a1');
+      c.unwatch('a1');
+      c.watch('a2');
+      await until(() => messages.length == 2);
+      expect((messages.last['agent_ids'] as List).toSet(), {'a1', 'a2'});
+      c.unwatch('a1');
+      await until(() => messages.length == 3);
+      expect(messages.last['agent_ids'], ['a2']);
+      expect(c.watched, {'a2'});
+    });
+
+    test('reconnects with the open timelines', () async {
+      c.watch('a1');
+      c.reconnect(force: true);
+      await until(() => streams.length == 2 && c.status == ConnectionStatus.online);
+      expect(streams.last.queryParameters['items'], 'a1');
+    });
+
+    test('a closed timeline reloads when opened again', () async {
+      c.watch('a1');
+      await c.loadTimeline('a1');
+      c.unwatch('a1');
+      expect(c.timeline('a1').stale, isTrue);
+      c.watch('a1');
+      await c.loadTimeline('a1');
+      expect(timelineRequests, hasLength(2));
+      expect(c.timeline('a1').items.map((i) => i.n), [0, 1, 2, 3, 4, 5]);
+    });
+
+    test('a hole before a live item reloads the latest page', () async {
+      c.watch('a1');
+      await c.loadTimeline('a1');
+      event(2, 'agent.item', 'a1', {'n': 3, 'type': 'assistant_message', 'timestamp': '2026-10-07T20:00:00Z'});
+      await until(() => c.timeline('a1').items.length == 4);
+      expect(timelineRequests, hasLength(1));
+      event(3, 'agent.item', 'a1', {'n': 5, 'type': 'assistant_message', 'timestamp': '2026-10-07T20:00:00Z'});
+      await until(() => timelineRequests.length == 2 && !c.timeline('a1').loading);
+      expect(c.timeline('a1').items.map((i) => i.n), [0, 1, 2, 3, 4, 5]);
+    });
+  });
+
   test('update manifest parses the release android.json', () {
     final info = UpdateInfo.parse({
       'version': '1.2.3',

@@ -287,7 +287,9 @@ class MachineConnection extends ChangeNotifier {
 
   Future<void> _openStream() async {
     final channel = IOWebSocketChannel.connect(
-      client.streamUri(since: _seq, epoch: _epoch),
+      // Only the items of the timelines on screen: the others refresh when
+      // they are opened again.
+      client.streamUri(since: _seq, epoch: _epoch, items: _watched.keys),
       // The bridge pings every 20 s; our pings detect a dead socket (network
       // change, sleep) instead of staying "online" for minutes.
       pingInterval: pingInterval,
@@ -355,9 +357,17 @@ class MachineConnection extends ChangeNotifier {
       case 'agent.item':
         final timeline = timelines[agentId];
         if (timeline != null && timeline.loaded) {
-          timeline.merge([TimelineItem.fromJson(data)]);
+          final item = TimelineItem.fromJson(data);
+          // A hole before it: items went by while the stream skipped this
+          // agent (subscribed after the page was read).
+          final gap = timeline.items.isNotEmpty && item.n > timeline.items.last.n + 1;
+          timeline.merge([item]);
           timeline.changed();
           _saveTimeline(agentId!);
+          if (gap) {
+            timeline.stale = true;
+            if (_watched.containsKey(agentId)) unawaited(loadTimeline(agentId));
+          }
         }
       case 'notification':
         final interactionId = data['interaction_id'] as String?;
@@ -437,12 +447,37 @@ class MachineConnection extends ChangeNotifier {
 
   TimelineState timeline(String agentId) => timelines.putIfAbsent(agentId, TimelineState.new);
 
-  /// A screen shows this timeline: keep it fresh after a resync.
-  void watch(String agentId) => _watched[agentId] = (_watched[agentId] ?? 0) + 1;
+  /// Agents whose items the stream sends.
+  @visibleForTesting
+  Set<String> get watched => _watched.keys.toSet();
+
+  /// A screen shows this timeline: stream its items and keep it fresh after
+  /// a resync. Call before [loadTimeline] so no item falls in between.
+  void watch(String agentId) {
+    final n = _watched[agentId] = (_watched[agentId] ?? 0) + 1;
+    if (n == 1) _sendItemFilter();
+  }
 
   void unwatch(String agentId) {
     final n = (_watched[agentId] ?? 1) - 1;
-    n <= 0 ? _watched.remove(agentId) : _watched[agentId] = n;
+    if (n > 0) {
+      _watched[agentId] = n;
+      return;
+    }
+    if (_watched.remove(agentId) == null) return;
+    // Its items stop coming: reload the latest page when opened again.
+    timelines[agentId]?.stale = true;
+    _sendItemFilter();
+  }
+
+  /// Tells the open stream which agents' items to send. Older bridges
+  /// ignore it and keep sending everything.
+  void _sendItemFilter() {
+    try {
+      _channel?.sink.add(jsonEncode({'type': 'items', 'agent_ids': _watched.keys.toList()}));
+    } catch (_) {
+      // Closing: the next stream opens with the current filter.
+    }
   }
 
   void _resetTimeline(String agentId) {

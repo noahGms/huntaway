@@ -160,13 +160,15 @@ class BridgeClient {
     return Uri.parse('ws://$address/v1/agents/$agentId/terminal').replace(queryParameters: {'token': machine.token});
   }
 
-  /// WebSocket URL for the event stream.
-  Uri streamUri({int? since, String? epoch}) {
+  /// WebSocket URL for the event stream. [items] limits `agent.item` events
+  /// to these agents (empty = none, null = all); older bridges send all.
+  Uri streamUri({int? since, String? epoch, Iterable<String>? items}) {
     final address = _address ?? machine.addresses.first;
     return Uri.parse('ws://$address/v1/stream').replace(queryParameters: {
       'token': machine.token,
       if (since != null && epoch != null) 'since': '$since',
       if (since != null && epoch != null) 'epoch': epoch,
+      if (items != null) 'items': items.join(','),
     });
   }
 
