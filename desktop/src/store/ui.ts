@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 
-export type View = "conversations" | "servers" | "history" | "settings";
+export type View = "conversations" | "servers" | "history" | "settings" | "project";
 export type PanelTab = "activity" | "files" | "terminal";
 
 export interface Toast {
@@ -20,7 +20,10 @@ interface UiState {
   paletteOpen: boolean;
   newSession: { open: boolean; machineId?: string; workspace?: string };
   pair: { open: boolean; link?: string };
-  machineFilter: string | null;
+  /** Project shown by the project page. */
+  project: { machineId: string; project: string } | null;
+  /** Conversation keys of the sidebar rows, in order (Alt+↑/↓ walks them). */
+  visibleKeys: string[];
   toasts: Toast[];
   /** Focused diff in the Files tab. */
   focusedFile: string | null;
@@ -34,7 +37,8 @@ interface UiState {
   closeNewSession: () => void;
   openPair: (link?: string) => void;
   closePair: () => void;
-  setMachineFilter: (id: string | null) => void;
+  openProject: (machineId: string, project: string) => void;
+  setVisibleKeys: (keys: string[]) => void;
   toast: (text: string, kind?: Toast["kind"]) => void;
   dismiss: (id: number) => void;
   focusFile: (path: string | null) => void;
@@ -51,7 +55,8 @@ export const useUi = create<UiState>((set) => ({
   paletteOpen: false,
   newSession: { open: false },
   pair: { open: false },
-  machineFilter: null,
+  project: null,
+  visibleKeys: [],
   toasts: [],
   focusedFile: null,
   setView: (view) => set({ view }),
@@ -64,7 +69,8 @@ export const useUi = create<UiState>((set) => ({
   closeNewSession: () => set({ newSession: { open: false } }),
   openPair: (link) => set({ pair: { open: true, link } }),
   closePair: () => set({ pair: { open: false } }),
-  setMachineFilter: (machineFilter) => set({ machineFilter }),
+  openProject: (machineId, project) => set({ project: { machineId, project }, view: "project" }),
+  setVisibleKeys: (visibleKeys) => set({ visibleKeys }),
   toast: (text, kind = "info") => {
     const id = ++toastId;
     set((s) => ({ toasts: [...s.toasts, { id, kind, text }] }));

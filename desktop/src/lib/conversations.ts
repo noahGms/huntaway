@@ -36,7 +36,7 @@ export function agentTitle(agent: AgentView): string {
   if (agent.title) return humanizeSlug(agent.title);
   if (agent.summary) return firstLine(agent.summary, 80);
   const kind = agent.kind.charAt(0).toUpperCase() + agent.kind.slice(1);
-  return agent.tab_label ? `${kind} · onglet ${agent.tab_label}` : kind;
+  return agent.tab_label ? `${kind} · tab ${agent.tab_label}` : kind;
 }
 
 export function fromAgent(machine: MachineView, agent: AgentView): Conversation {
@@ -108,32 +108,24 @@ export function compareConversations(a: Conversation, b: Conversation): number {
   return (parseTime(b.lastActivity) ?? 0) - (parseTime(a.lastActivity) ?? 0);
 }
 
+export const projectKey = (machineId: string, project: string) => `${machineId}|${project}`;
+
 export interface Group {
   id: string;
   label: string;
   items: Conversation[];
 }
 
-/** Sidebar groups. Waiting agents always get their own group on top. */
+const DAY = 86_400_000;
+
+/** Flat sidebar groups. Waiting agents always get their own group on top. */
 export function groupConversations(list: Conversation[], by: "date" | "project", now = Date.now()): Group[] {
   const waiting = list.filter((c) => c.attention?.status === "blocked");
   const rest = list.filter((c) => c.attention?.status !== "blocked");
   const groups: Group[] = [];
-  if (waiting.length) groups.push({ id: "waiting", label: "En attente", items: waiting });
+  if (waiting.length) groups.push({ id: "waiting", label: "Waiting", items: waiting });
   if (by === "project") {
-    const map = new Map<string, Group>();
-    for (const c of rest) {
-      const id = `${c.machineId}|${c.project}`;
-      let g = map.get(id);
-      if (!g) {
-        g = { id, label: c.project, items: [] };
-        map.set(id, g);
-      }
-      g.items.push(c);
-    }
-    const sorted = [...map.values()].sort(
-      (a, b) => (parseTime(b.items[0]?.lastActivity) ?? 0) - (parseTime(a.items[0]?.lastActivity) ?? 0),
-    );
+    const sorted = projectGroups(rest);
     // Same project name on two machines: say which one.
     const names = new Map<string, number>();
     for (const g of sorted) names.set(g.label, (names.get(g.label) ?? 0) + 1);
@@ -142,45 +134,223 @@ export function groupConversations(list: Conversation[], by: "date" | "project",
   }
   const today = startOfDay(now);
   const buckets: [string, string, (t: number) => boolean][] = [
-    ["today", "Aujourd'hui", (t) => t >= today],
-    ["yesterday", "Hier", (t) => t >= today - 86_400_000],
-    ["week", "Cette semaine", (t) => t >= today - 6 * 86_400_000],
-    ["month", "Ce mois-ci", (t) => t >= today - 30 * 86_400_000],
-    ["older", "Plus ancien", () => true],
+    ["today", "Today", (t) => t >= today],
+    ["yesterday", "Yesterday", (t) => t >= today - DAY],
+    ["week", "This week", (t) => t >= today - 6 * DAY],
+    ["month", "This month", (t) => t >= today - 30 * DAY],
+    ["older", "Older", () => true],
   ];
-  const by_bucket = new Map<string, Conversation[]>();
+  const byBucket = new Map<string, Conversation[]>();
   for (const c of rest) {
     const t = parseTime(c.lastActivity) ?? 0;
     const bucket = buckets.find(([, , test]) => test(t))!;
-    const items = by_bucket.get(bucket[0]) ?? [];
+    const items = byBucket.get(bucket[0]) ?? [];
     items.push(c);
-    by_bucket.set(bucket[0], items);
+    byBucket.set(bucket[0], items);
   }
   for (const [id, label] of buckets) {
-    const items = by_bucket.get(id);
+    const items = byBucket.get(id);
     if (items?.length) groups.push({ id, label, items });
   }
   return groups;
 }
 
+/** One group per (machine, project), most recent first; ids are `projectKey()`. */
+function projectGroups(list: Conversation[]): Group[] {
+  const map = new Map<string, Group>();
+  for (const c of list) {
+    const id = projectKey(c.machineId, c.project);
+    let g = map.get(id);
+    if (!g) {
+      g = { id, label: c.project, items: [] };
+      map.set(id, g);
+    }
+    g.items.push(c);
+  }
+  return [...map.values()].sort((a, b) => latest(b.items) - latest(a.items));
+}
+
+function latest(items: Conversation[]): number {
+  let t = 0;
+  for (const c of items) t = Math.max(t, parseTime(c.lastActivity) ?? 0);
+  return t;
+}
+
+const isWaiting = (c: Conversation) => c.attention?.status === "blocked";
+
+export type SidebarRow =
+  | { type: "header"; id: string; label: string; waiting?: boolean }
+  | { type: "machine"; id: string; machineId: string; name: string; count: number; waiting: number; collapsed: boolean }
+  | { type: "project"; id: string; machineId: string; project: string; count: number; waiting: number; collapsed: boolean; favorite: boolean; depth: number }
+  | { type: "conv"; id: string; conv: Conversation; depth: number; suffix?: string }
+  | { type: "inactive"; id: string; hidden: number; showing: boolean };
+
+export interface SidebarOptions {
+  grouping: "date" | "project";
+  /** Machines of the current space, in display order. */
+  machines: { id: string; name: string }[];
+  collapsed: ReadonlySet<string>;
+  favorites: ReadonlySet<string>;
+  /** Projects idle for this many days are hidden (0 = never). */
+  inactiveDays: number;
+  showInactive: boolean;
+  now?: number;
+}
+
+/** Projects that are idle: no live agent, not a favorite, no activity for `days`. */
+export function inactiveProjects(list: Conversation[], favorites: ReadonlySet<string>, days: number, now = Date.now()): Set<string> {
+  const out = new Set<string>();
+  if (days <= 0) return out;
+  const cutoff = now - days * DAY;
+  const active = new Set<string>();
+  const seen = new Set<string>();
+  for (const c of list) {
+    const key = projectKey(c.machineId, c.project);
+    seen.add(key);
+    if (c.live || (parseTime(c.lastActivity) ?? 0) >= cutoff) active.add(key);
+  }
+  for (const key of seen) if (!active.has(key) && !favorites.has(key)) out.add(key);
+  return out;
+}
+
+/**
+ * Rows of the sidebar list. Waiting agents are pinned on top (across
+ * machines); the rest is grouped by date, or as a Machine → Project tree
+ * (the machine level is skipped when the space has a single machine).
+ */
+export function buildSidebarRows(list: Conversation[], opts: SidebarOptions): SidebarRow[] {
+  const now = opts.now ?? Date.now();
+  const multi = opts.machines.length > 1;
+  const inactive = inactiveProjects(list, opts.favorites, opts.inactiveDays, now);
+  const visible = opts.showInactive || !inactive.size ? list : list.filter((c) => !inactive.has(projectKey(c.machineId, c.project)));
+  const suffix = (c: Conversation) => (multi ? `${c.project} · ${c.machineName}` : c.project);
+  const rows: SidebarRow[] = [];
+
+  const waiting = visible.filter(isWaiting);
+  if (waiting.length) {
+    rows.push({ type: "header", id: "h-waiting", label: "Waiting", waiting: true });
+    for (const c of waiting) rows.push({ type: "conv", id: `w-${c.key}`, conv: c, depth: 0, suffix: suffix(c) });
+  }
+
+  if (opts.grouping === "date") {
+    for (const g of groupConversations(visible, "date", now)) {
+      if (g.id === "waiting") continue;
+      rows.push({ type: "header", id: `h-${g.id}`, label: g.label });
+      for (const c of g.items) rows.push({ type: "conv", id: c.key, conv: c, depth: 0, suffix: suffix(c) });
+    }
+  } else {
+    const byMachine = new Map<string, Conversation[]>();
+    for (const c of visible) {
+      const items = byMachine.get(c.machineId) ?? [];
+      items.push(c);
+      byMachine.set(c.machineId, items);
+    }
+    for (const m of opts.machines) {
+      const items = byMachine.get(m.id) ?? [];
+      const machineId = `m:${m.id}`;
+      const machineCollapsed = multi && opts.collapsed.has(machineId);
+      if (multi) {
+        rows.push({ type: "machine", id: machineId, machineId: m.id, name: m.name, count: items.length, waiting: items.filter(isWaiting).length, collapsed: machineCollapsed });
+        if (machineCollapsed) continue;
+      }
+      const depth = multi ? 1 : 0;
+      const projects = projectGroups(items).sort((a, b) => Number(opts.favorites.has(b.id)) - Number(opts.favorites.has(a.id)));
+      for (const p of projects) {
+        const id = `p:${p.id}`;
+        const collapsed = opts.collapsed.has(id);
+        rows.push({ type: "project", id, machineId: m.id, project: p.label, count: p.items.length, waiting: p.items.filter(isWaiting).length, collapsed, favorite: opts.favorites.has(p.id), depth });
+        if (!collapsed) for (const c of p.items) rows.push({ type: "conv", id: c.key, conv: c, depth: depth + 1 });
+      }
+    }
+  }
+
+  if (inactive.size) rows.push({ type: "inactive", id: "inactive", hidden: inactive.size, showing: opts.showInactive });
+  return rows;
+}
+
+/** Conversations matching every word of the query (title, project, machine, agent). */
+export function searchConversations(list: Conversation[], query: string, limit = Infinity): Conversation[] {
+  const words = query.toLowerCase().split(/[\s@]+/).filter(Boolean);
+  if (!words.length) return list.slice(0, limit);
+  const out: Conversation[] = [];
+  for (const c of list) {
+    const text = `${c.title} ${c.project} ${c.machineName} ${c.kind}`.toLowerCase();
+    if (words.every((w) => text.includes(w))) {
+      out.push(c);
+      if (out.length >= limit) break;
+    }
+  }
+  return out;
+}
+
+export interface ProjectSummary {
+  key: string;
+  machineId: string;
+  machineName: string;
+  project: string;
+  count: number;
+  waiting: number;
+  lastActivity: number;
+  /** A live agent of the project (its workspace hosts new sessions). */
+  agent?: AgentView;
+}
+
+/** Every (machine, project) pair, most recent first. */
+export function projectsOf(list: Conversation[]): ProjectSummary[] {
+  const map = new Map<string, ProjectSummary>();
+  for (const c of list) {
+    const key = projectKey(c.machineId, c.project);
+    let p = map.get(key);
+    if (!p) {
+      p = { key, machineId: c.machineId, machineName: c.machineName, project: c.project, count: 0, waiting: 0, lastActivity: 0 };
+      map.set(key, p);
+    }
+    p.count++;
+    if (isWaiting(c)) p.waiting++;
+    p.lastActivity = Math.max(p.lastActivity, parseTime(c.lastActivity) ?? 0);
+    if (!p.agent && c.agent) p.agent = c.agent;
+  }
+  return [...map.values()].sort((a, b) => b.lastActivity - a.lastActivity);
+}
+
+/** `now`, `5m`, `3h`, `2d`, `3w`, `Oct 12`: fits a narrow fixed-width column. */
+export function compactAge(iso: string | null | undefined, now = Date.now()): string {
+  const t = parseTime(iso);
+  if (t === null) return "";
+  const s = Math.max(0, (now - t) / 1000);
+  if (s < 60) return "now";
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86_400) return `${Math.floor(s / 3600)}h`;
+  if (s < 7 * 86_400) return `${Math.floor(s / 86_400)}d`;
+  if (s < 35 * 86_400) return `${Math.floor(s / (7 * 86_400))}w`;
+  return new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+/** `Oct 12, 2026, 2:28 PM`. */
+export function longDate(iso: string | null | undefined): string {
+  const t = parseTime(iso);
+  if (t === null) return "";
+  return new Date(t).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
 export function statusLabel(attention: Attention | null): string {
-  if (!attention) return "Archivée";
+  if (!attention) return "Archived";
   switch (attention.status) {
     case "blocked":
       return {
-        approval: "Approbation requise",
+        approval: "Needs approval",
         question: "Question",
-        plan: "Plan à valider",
-        explicit_question: "T'a posé une question",
-        prompt: "En attente",
+        plan: "Plan to review",
+        explicit_question: "Asked you something",
+        prompt: "Waiting",
       }[attention.reason];
     case "working":
-      return "En cours";
+      return "Working";
     case "done":
-      return "Terminé";
+      return "Done";
     case "idle":
-      return "Inactif";
+      return "Idle";
     default:
-      return "Inconnu";
+      return "Unknown";
   }
 }

@@ -1,8 +1,14 @@
-// Global keyboard shortcuts (PRD §6.11, Settings → Raccourcis).
+// Global keyboard shortcuts (listed in Settings → Shortcuts).
 
 import { useEffect } from "react";
 import type { Conversation } from "../lib/conversations";
 import { useUi } from "../store/ui";
+
+function isTyping(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el) return false;
+  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable || !!el.closest?.(".xterm");
+}
 
 export function useShortcuts(conversations: Conversation[]) {
   useEffect(() => {
@@ -31,12 +37,15 @@ export function useShortcuts(conversations: Conversation[]) {
         if (!waiting.length) return;
         const i = waiting.findIndex((c) => c.key === ui.selected);
         ui.select(waiting[(i + 1) % waiting.length].key);
-      } else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      } else if (e.altKey && !mod && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        // Walks the rows visible in the sidebar (space, filters, collapsed nodes).
+        if (isTyping(e.target) || e.defaultPrevented) return;
+        const keys = ui.showSidebar && ui.visibleKeys.length ? ui.visibleKeys : conversations.map((c) => c.key);
+        if (!keys.length) return;
         e.preventDefault();
-        if (!conversations.length) return;
-        const i = conversations.findIndex((c) => c.key === ui.selected);
-        const next = e.key === "ArrowDown" ? Math.min(conversations.length - 1, i + 1) : Math.max(0, i - 1);
-        ui.select(conversations[i === -1 ? 0 : next].key);
+        const i = keys.indexOf(ui.selected ?? "");
+        const next = e.key === "ArrowDown" ? Math.min(keys.length - 1, i + 1) : Math.max(0, i - 1);
+        ui.select(keys[i === -1 ? 0 : next]);
       } else if (mod && e.key === ",") {
         e.preventDefault();
         ui.setView("settings");

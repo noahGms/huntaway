@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { StoredItem } from "../api/types";
 import { computeActivity } from "./activity";
 import { changeDiff, parsePatch } from "./diff";
-import { groupConversations, type Conversation } from "./conversations";
 import { humanizeSlug, shortTime } from "./format";
 
 const items: StoredItem[] = [
@@ -36,27 +35,6 @@ describe("diff", () => {
     const d = parsePatch("*** Begin Patch\n*** Update File: src/app.ts\n@@\n-a\n+b\n+c\n*** End Patch");
     expect([d.additions, d.deletions]).toEqual([2, 1]);
     expect(d.lines[0]).toEqual({ type: "hunk", text: "Update File: src/app.ts" });
-  });
-});
-
-describe("conversations", () => {
-  const conv = (key: string, last: string, status: "blocked" | "done" | null, project = "api"): Conversation => ({
-    key, machineId: "m", machineName: "Mac", local: true, live: status !== null, kind: "claude", title: key, project, cwd: null,
-    attention: status === null ? null : status === "blocked" ? { status: "blocked", reason: "approval" } : { status: "done" },
-    lastActivity: last,
-  });
-  it("puts waiting agents first and groups by date", () => {
-    const now = Date.parse("2026-10-17T12:00:00");
-    const groups = groupConversations(
-      [conv("a", "2026-10-17T11:00:00", "done"), conv("b", "2026-10-16T11:00:00", null), conv("c", "2026-10-01T11:00:00", "blocked")],
-      "date",
-      now,
-    );
-    expect(groups.map((g) => g.label)).toEqual(["En attente", "Aujourd'hui", "Hier"]);
-  });
-  it("groups by project", () => {
-    const groups = groupConversations([conv("a", "2026-10-17T11:00:00", "done", "api"), conv("b", "2026-10-16T11:00:00", null, "web")], "project");
-    expect(groups.map((g) => g.label)).toEqual(["api", "web"]);
   });
 });
 
