@@ -1,4 +1,9 @@
-// Display helpers: dates, durations, token counts.
+// Display helpers: dates, durations, token counts. English labels, with the
+// system's English locale for numbers and dates (en-US otherwise).
+
+/** `en-GB`, `en-US`…: the first English locale of the system. */
+export const LOCALE =
+  (typeof navigator !== "undefined" ? (navigator.languages ?? [navigator.language]).find((l) => /^en\b/i.test(l)) : undefined) ?? "en-US";
 
 export function parseTime(iso: string | null | undefined): number | null {
   if (!iso) return null;
@@ -6,31 +11,28 @@ export function parseTime(iso: string | null | undefined): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
-/** `14:28`, `Hier`, `Mar`, `12 oct.` depending on the age. */
+/** `14:28`, `Yesterday`, `Tue`, `Oct 12` depending on the age. */
 export function shortTime(iso: string | null | undefined, now = Date.now()): string {
   const t = parseTime(iso);
   if (t === null) return "";
   const d = new Date(t);
   const today = startOfDay(now);
-  if (t >= today) return d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-  if (t >= today - 86_400_000) return "Hier";
-  if (t >= today - 6 * 86_400_000) {
-    const day = d.toLocaleDateString("fr-FR", { weekday: "short" }).replace(".", "");
-    return day.charAt(0).toUpperCase() + day.slice(1);
-  }
-  return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+  if (t >= today) return d.toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit" });
+  if (t >= today - 86_400_000) return "Yesterday";
+  if (t >= today - 6 * 86_400_000) return d.toLocaleDateString(LOCALE, { weekday: "short" });
+  return d.toLocaleDateString(LOCALE, { day: "numeric", month: "short" });
 }
 
 export function clockTime(iso: string | null | undefined): string {
   const t = parseTime(iso);
   if (t === null) return "";
-  return new Date(t).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  return new Date(t).toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit" });
 }
 
 export function fullDate(iso: string | null | undefined): string {
   const t = parseTime(iso);
   if (t === null) return "—";
-  return new Date(t).toLocaleString("fr-FR", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  return new Date(t).toLocaleString(LOCALE, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 export function startOfDay(t: number): number {
@@ -39,22 +41,7 @@ export function startOfDay(t: number): number {
   return d.getTime();
 }
 
-/** `il y a 3 min`. */
-export function ago(iso: string | null | undefined, now = Date.now()): string {
-  const t = parseTime(iso);
-  if (t === null) return "";
-  return agoMs(now - t);
-}
-
-export function agoMs(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000));
-  if (s < 45) return "à l'instant";
-  if (s < 3600) return `il y a ${Math.round(s / 60)} min`;
-  if (s < 86_400) return `il y a ${Math.round(s / 3600)} h`;
-  return `il y a ${Math.round(s / 86_400)} j`;
-}
-
-/** `16 min`, `1 h 05`, `42 s`. */
+/** `16 min`, `1 h 05 min`, `42 s`. */
 export function duration(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || ms < 0) return "—";
   const s = Math.round(ms / 1000);
@@ -62,20 +49,20 @@ export function duration(ms: number | null | undefined): string {
   const m = Math.floor(s / 60);
   if (m < 60) return `${m} min`;
   const h = Math.floor(m / 60);
-  return `${h} h ${String(m % 60).padStart(2, "0")}`;
+  return `${h} h ${String(m % 60).padStart(2, "0")} min`;
 }
 
-/** `42 680`, `1,2 M`. */
+/** `42,680`, `1.2M`. */
 export function tokens(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toLocaleString("fr-FR", { maximumFractionDigits: 1 })} M`;
-  if (n >= 100_000) return `${Math.round(n / 1000).toLocaleString("fr-FR")} k`;
-  return n.toLocaleString("fr-FR");
+  if (n >= 1_000_000) return `${(n / 1_000_000).toLocaleString(LOCALE, { maximumFractionDigits: 1 })}M`;
+  if (n >= 100_000) return `${Math.round(n / 1000).toLocaleString(LOCALE)}k`;
+  return n.toLocaleString(LOCALE);
 }
 
 export function usd(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
-  return `${n.toLocaleString("fr-FR", { minimumFractionDigits: n < 1 ? 3 : 2, maximumFractionDigits: n < 1 ? 3 : 2 })} $`;
+  return `$${n.toLocaleString(LOCALE, { minimumFractionDigits: n < 1 ? 3 : 2, maximumFractionDigits: n < 1 ? 3 : 2 })}`;
 }
 
 /** `expense-receipt-preview-layout` → `Expense receipt preview layout`. */

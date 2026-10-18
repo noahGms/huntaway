@@ -45,7 +45,7 @@ describe("format", () => {
   });
   it("short times", () => {
     const now = Date.parse("2026-10-17T12:00:00");
-    expect(shortTime("2026-10-16T09:00:00", now)).toBe("Hier");
+    expect(shortTime("2026-10-16T09:00:00", now)).toBe("Yesterday");
   });
 });
 
