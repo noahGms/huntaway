@@ -6,7 +6,7 @@
 //! so the finest live granularity is one block, not one token.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -54,8 +54,25 @@ pub fn transcript_path(cwd: Option<&str>, session_id: &str) -> Option<PathBuf> {
         .find(|p| p.exists())
 }
 
+/// Transcript of the sub-agent started by the `Task` / `Agent` call
+/// `tool_use_id`: `<session>/subagents/agent-<id>.jsonl` next to the main
+/// transcript, found through its `.meta.json`.
+pub fn subagent_transcript(main: &Path, tool_use_id: &str) -> Option<PathBuf> {
+    let dir = main.with_extension("").join("subagents");
+    std::fs::read_dir(&dir).ok()?.flatten().find_map(|e| {
+        let path = e.path();
+        let name = path.file_name()?.to_str()?;
+        let stem = name.strip_suffix(".meta.json")?;
+        let meta: Value = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+        (meta["toolUseId"].as_str() == Some(tool_use_id)).then(|| dir.join(format!("{stem}.jsonl"))).filter(|p| p.exists())
+    })
+}
+
 #[derive(Default)]
 pub struct Parser {
+    /// Reading a sub-agent transcript: its lines are all sidechain, and its
+    /// pending calls are what the sub-agent asks permission for.
+    subagent: bool,
     /// Pending tool calls keyed by insertion order.
     pending: BTreeMap<u64, PendingTool>,
     pending_seq: u64,
@@ -122,6 +139,11 @@ pub fn parser() -> Box<dyn LineParser> {
     Box::<Parser>::default()
 }
 
+/// Parser of a sub-agent transcript ([`subagent_transcript`]).
+pub fn subagent_parser() -> Box<dyn LineParser> {
+    Box::new(Parser { subagent: true, ..Parser::default() })
+}
+
 impl Parser {
     fn parse_line(&mut self, line: &str) -> Vec<TimelineItem> {
         if line.is_empty() {
@@ -139,6 +161,11 @@ impl Parser {
         let is_meta = entry["isMeta"].as_bool().unwrap_or(false);
 
         match entry["type"].as_str() {
+            // After `/compact`, Claude writes the summary of the earlier
+            // conversation as a user message: not something the user said.
+            Some("user") if entry["isCompactSummary"].as_bool() == Some(true) => {
+                vec![TimelineItem::Notice { timestamp, text: "Conversation compacted".into() }]
+            }
             Some("user") if !is_meta => self.parse_user(&entry, uuid, timestamp),
             Some("assistant") => {
                 self.record_usage(&entry["message"], sidechain);
@@ -197,7 +224,7 @@ impl Parser {
                         tool_use_id,
                         is_error: block["is_error"].as_bool().unwrap_or(false),
                         rejected,
-                        summary: if rejected { "Refusé".into() } else { first_line(&text, 160) },
+                        summary: if rejected { "Denied".into() } else { first_line(&text, 160) },
                     });
                 }
                 Some("text") => {
@@ -240,7 +267,7 @@ impl Parser {
         let kind = tool_kind(&name);
         let summary = tool_summary(&name, input);
 
-        if !sidechain {
+        if !sidechain || self.subagent {
             self.pending_seq += 1;
             self.pending.insert(
                 self.pending_seq,
@@ -311,7 +338,7 @@ fn user_text(text: &str, uuid: String, timestamp: String) -> Option<TimelineItem
         return Some(TimelineItem::UserMessage { uuid, timestamp, text: shown });
     }
     if text.starts_with("[Request interrupted") {
-        return Some(TimelineItem::Notice { timestamp, text: "Interrompu par l'utilisateur".into() });
+        return Some(TimelineItem::Notice { timestamp, text: "Interrupted by the user".into() });
     }
     Some(TimelineItem::UserMessage { uuid, timestamp, text: text.to_string() })
 }
@@ -340,8 +367,11 @@ fn tool_summary(name: &str, input: &Value) -> String {
         ToolKind::Web => pick(&["url", "query"]),
         ToolKind::Subagent => pick(&["description", "prompt"]),
         ToolKind::Question => input["questions"][0]["question"].as_str().map(str::to_string),
-        ToolKind::Plan => Some("Plan proposé".into()),
-        ToolKind::Todo => Some(format!("{} tâches", input["todos"].as_array().map_or(0, Vec::len))),
+        ToolKind::Plan => Some("Plan proposed".into()),
+        ToolKind::Todo => {
+            let n = input["todos"].as_array().map_or(0, Vec::len);
+            Some(format!("{n} task{}", if n == 1 { "" } else { "s" }))
+        }
         ToolKind::Other => pick(&["description", "command", "file_path", "url", "query"]),
     };
     first_line(&summary.unwrap_or_default(), 120)
@@ -552,7 +582,7 @@ mod tests {
             r#"{"type":"user","uuid":"u","timestamp":"t","message":{"content":[{"type":"tool_result","tool_use_id":"tr","is_error":true,"content":"The user doesn't want to proceed with this tool use. The tool use was rejected"}]}}"#,
             r#"{"type":"user","uuid":"i","timestamp":"t","message":{"content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}"#,
         ]);
-        assert!(matches!(&items[1], TimelineItem::ToolResult { rejected: true, summary, .. } if summary == "Refusé"));
+        assert!(matches!(&items[1], TimelineItem::ToolResult { rejected: true, summary, .. } if summary == "Denied"));
         assert!(matches!(&items[2], TimelineItem::Notice { .. }));
         assert!(tail.pending_tool_calls().is_empty());
     }
@@ -566,6 +596,36 @@ mod tests {
         ]);
         assert_eq!(items.len(), 1);
         assert!(matches!(&items[0], TimelineItem::UserMessage { text, .. } if text == "/goal faire la phase 0"));
+    }
+
+    #[test]
+    fn compact_summary_is_a_notice() {
+        let (_, items) = tail_with(&[
+            r#"{"type":"user","uuid":"c","timestamp":"t","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"This session is being continued from a previous conversation. Summary: …"}}"#,
+        ]);
+        assert_eq!(items.len(), 1);
+        assert!(matches!(&items[0], TimelineItem::Notice { text, .. } if text == "Conversation compacted"));
+    }
+
+    #[test]
+    fn subagent_transcript_tracks_its_pending_call() {
+        let dir = std::env::temp_dir().join(format!("huntaway-sub-{}", std::process::id()));
+        let subagents = dir.join("main-session").join("subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        let main = dir.join("main-session.jsonl");
+        std::fs::write(&main, "").unwrap();
+        std::fs::write(subagents.join("agent-a1.meta.json"), r#"{"agentType":"general-purpose","toolUseId":"task1"}"#).unwrap();
+        std::fs::write(
+            subagents.join("agent-a1.jsonl"),
+            r#"{"type":"assistant","uuid":"s1","isSidechain":true,"timestamp":"t","message":{"content":[{"type":"tool_use","id":"tb","name":"Bash","input":{"command":"rm -rf build"}}]}}"#.to_string() + "\n",
+        )
+        .unwrap();
+        assert!(subagent_transcript(&main, "other").is_none());
+        let path = subagent_transcript(&main, "task1").unwrap();
+        let mut tail = TranscriptTail::with_parser(&path, subagent_parser);
+        tail.poll().unwrap();
+        let pending = tail.pending_tool_calls();
+        assert_eq!(pending[0].summary, "rm -rf build");
     }
 
     #[test]
