@@ -8,6 +8,7 @@ import { useStop } from "../../hooks/useStop";
 import { agentTitle, archiveId, historyKey, liveKey, statusLabel, type Conversation } from "../../lib/conversations";
 import { ALT, MOD } from "../../lib/keys";
 import { modPressed, overlayOpen } from "../../lib/platform";
+import { useDrafts } from "../../store/drafts";
 import { can, touchTimeline, useMachines } from "../../store/machines";
 import { usePrefs } from "../../store/prefs";
 import { useUi } from "../../store/ui";
@@ -395,7 +396,8 @@ function ResumeBar({ conv }: { conv: Conversation }) {
   const machine = useMachines((s) => s.machines[conv.machineId]);
   const expect = useMachines((s) => s.expect);
   const { select, toast } = useUi();
-  const [prompt, setPrompt] = useState("");
+  const prompt = useDrafts((s) => s.drafts[conv.key]?.text ?? "");
+  const setPrompt = (text: string) => useDrafts.getState().setText(conv.key, text);
   const [busy, setBusy] = useState(false);
   const allowed = can(machine, "agents.resume");
   const online = machine?.status.state === "online";
@@ -406,6 +408,7 @@ function ResumeBar({ conv }: { conv: Conversation }) {
     try {
       const r = await api.resume(conv.machineId, conv.historyId, { prompt: prompt.trim() });
       toast(r.already_running ? "This conversation is already running" : "Conversation resumed in Herdr", "success");
+      useDrafts.getState().clear(conv.key);
       const key = liveKey(conv.machineId, r.agent_id);
       expect(key);
       select(key);

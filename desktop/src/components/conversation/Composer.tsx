@@ -6,18 +6,12 @@ import type { AgentView, FileMatch } from "../../api/types";
 import { markSent, useStop } from "../../hooks/useStop";
 import { basename } from "../../lib/format";
 import { MOD } from "../../lib/keys";
+import { useDrafts, type Attachment } from "../../store/drafts";
 import { can, useMachines } from "../../store/machines";
 import { useSettings } from "../../store/settings";
 import { useUi } from "../../store/ui";
 import { Spinner } from "../ui/Button";
 import { AgentIcon } from "../ui/Status";
-
-interface Attachment {
-  name: string;
-  /** Path on the machine, once uploaded. */
-  path: string | null;
-  image: boolean;
-}
 
 const QUICK_REPLIES = ["Continue", "Run the tests", "Explain what you just did", "Commit the changes"];
 
@@ -40,26 +34,6 @@ const SLASH: Record<string, [string, string][]> = {
   ],
 };
 
-/** Drafts survive restarts; old ones are dropped. */
-const DRAFT_PREFIX = "draft:";
-const DRAFT_MAX_AGE_MS = 14 * 86_400_000;
-
-function readDraft(key: string): string {
-  try {
-    const raw = localStorage.getItem(DRAFT_PREFIX + key);
-    if (!raw) return "";
-    const { text, at } = JSON.parse(raw) as { text: string; at: number };
-    return Date.now() - at < DRAFT_MAX_AGE_MS ? text : "";
-  } catch {
-    return "";
-  }
-}
-
-function writeDraft(key: string, text: string) {
-  if (text) localStorage.setItem(DRAFT_PREFIX + key, JSON.stringify({ text, at: Date.now() }));
-  else localStorage.removeItem(DRAFT_PREFIX + key);
-}
-
 function readAsBase64(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -69,18 +43,22 @@ function readAsBase64(file: Blob): Promise<string> {
   });
 }
 
+const NO_ATTACHMENTS: Attachment[] = [];
+
 const isImage = (name: string) => /\.(png|jpe?g|gif|webp|heic|bmp)$/i.test(name);
 
 export function Composer({ machineId, agent }: { machineId: string; agent: AgentView }) {
   const machine = useMachines((s) => s.machines[machineId]);
   const enterToSend = useSettings((s) => s.settings.enter_to_send);
   const toast = useUi((s) => s.toast);
-  // Draft per conversation (the view is mounted again for another one).
+  // Draft per conversation, kept in a store: switching conversations or an
+  // upload finishing after the switch loses nothing.
   const draftKey = `${machineId}:${agent.id}`;
-  const [text, setText] = useState(() => readDraft(draftKey));
+  const text = useDrafts((s) => s.drafts[draftKey]?.text ?? "");
+  const attachments = useDrafts((s) => s.drafts[draftKey]?.attachments) ?? NO_ATTACHMENTS;
+  const setText = useCallback((t: string) => useDrafts.getState().setText(draftKey, t), [draftKey]);
   const [sending, setSending] = useState(false);
   const { canStop, stopping, stop } = useStop(machineId, agent);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [mention, setMention] = useState<{ query: string; start: number } | null>(null);
   const [matches, setMatches] = useState<FileMatch[]>([]);
   const [active, setActive] = useState(0);
@@ -102,8 +80,6 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
   const popup: { label: string; hint?: string; value: string; icon: React.ReactNode }[] = mention
     ? matches.map((m) => ({ label: m.path, value: m.path, icon: <FileText size={13} /> }))
     : slash.map(([c, hint]) => ({ label: c, hint, value: c, icon: <Slash size={13} /> }));
-
-  useEffect(() => writeDraft(draftKey, text), [text, draftKey]);
 
   // Auto height.
   useEffect(() => {
@@ -144,17 +120,17 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
 
   const upload = useCallback(
     async (name: string, run: () => Promise<string>) => {
-      const placeholder: Attachment = { name, path: null, image: isImage(name) };
-      setAttachments((a) => [...a, placeholder]);
+      const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      const drafts = useDrafts.getState();
+      drafts.addAttachment(draftKey, { id, name, path: null, image: isImage(name) });
       try {
-        const path = await run();
-        setAttachments((a) => a.map((x) => (x === placeholder ? { ...x, path } : x)));
+        drafts.resolveAttachment(draftKey, id, await run());
       } catch (e) {
-        setAttachments((a) => a.filter((x) => x !== placeholder));
+        drafts.resolveAttachment(draftKey, id, null);
         toast(`Couldn't upload ${name}: ${errorMessage(e)}`, "error");
       }
     },
-    [toast],
+    [toast, draftKey],
   );
 
   // Files dropped on the window, for the conversation on screen. One
@@ -217,8 +193,9 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
         await api.sendMessage(machineId, agent.id, message);
       }
       markSent(machineId, agent.id);
-      if (!override) setText("");
-      setAttachments([]);
+      const drafts = useDrafts.getState();
+      if (override) attachments.forEach((a) => drafts.removeAttachment(draftKey, a.id));
+      else drafts.clear(draftKey);
       setMention(null);
     } catch (e) {
       toast(errorMessage(e), "error");
@@ -299,11 +276,11 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
         )}
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-3 pt-3">
-            {attachments.map((a, i) => (
-              <span key={i} className="flex items-center gap-1.5 rounded-lg border border-border bg-bg px-2 py-1 text-[11.5px] text-muted">
+            {attachments.map((a) => (
+              <span key={a.id} className="flex items-center gap-1.5 rounded-lg border border-border bg-bg px-2 py-1 text-[11.5px] text-muted">
                 {a.path ? a.image ? <ImageIcon size={12} /> : <FileText size={12} /> : <Spinner className="h-3 w-3" />}
                 <span className="max-w-[200px] truncate">{a.name}</span>
-                <button onClick={() => setAttachments((x) => x.filter((_, j) => j !== i))} className="text-faint hover:text-text" aria-label="Remove">
+                <button onClick={() => useDrafts.getState().removeAttachment(draftKey, a.id)} className="text-faint hover:text-text" aria-label="Remove">
                   <X size={11} />
                 </button>
               </span>
