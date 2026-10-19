@@ -102,6 +102,9 @@ class MachineConnection extends ChangeNotifier {
 
   /// Version huntawayd announced it restarts into (self-update).
   String? restartingTo;
+
+  /// Plan limits of the agents on the machine (null: unknown, older bridge).
+  MachineLimits? limits;
   final Map<String, Agent> agents = {};
   final List<Workspace> workspaces = [];
   final Map<String, TimelineState> timelines = {};
@@ -293,6 +296,15 @@ class MachineConnection extends ChangeNotifier {
     }
   }
 
+  Future<void> _loadLimits() async {
+    try {
+      limits = await client.limits();
+      notifyListeners();
+    } catch (_) {
+      // Older bridge: no limits.
+    }
+  }
+
   bool _setName(String? name) {
     if (name == null || name.isEmpty || name == machine.name) return false;
     machine.name = name;
@@ -338,6 +350,7 @@ class MachineConnection extends ChangeNotifier {
       _settle();
       if (e['resync_required'] == true) unawaited(_resync().catchError((_) {}));
       unawaited(_refreshMachine());
+      unawaited(_loadLimits());
       return;
     }
     final buffer = _buffer;
@@ -396,6 +409,9 @@ class MachineConnection extends ChangeNotifier {
           interactionId: interactionId == null || interactionId.isEmpty ? null : interactionId,
           replayed: seq <= _helloSeq,
         ));
+      case 'limits.updated':
+        limits = MachineLimits.fromJson(data);
+        notifyListeners();
       case 'daemon.restarting':
         // Self-update: the stream drops and comes back on the new version.
         restartingTo = data['to'] as String?;

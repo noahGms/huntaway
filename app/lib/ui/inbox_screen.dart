@@ -6,6 +6,7 @@ import '../nesting.dart';
 import '../sync.dart';
 import 'agent_screen.dart';
 import 'common.dart';
+import 'limits.dart';
 import 'new_agent_sheet.dart';
 
 /// Home screen (PRD §13.1): what needs attention, across all machines.
@@ -105,6 +106,7 @@ class _InboxScreenState extends State<InboxScreen> {
                 selected: _machine,
                 onSelected: (id) => setState(() => _machine = id),
               ),
+            LimitsBar(connections: model.connections.where((c) => _machine == null || c.machine.machineId == _machine).toList()),
             OfflineBanner(model.connections),
             if (agents.isEmpty)
               _EmptyInbox(query: _search.text)

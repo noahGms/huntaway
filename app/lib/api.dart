@@ -97,6 +97,10 @@ class BridgeClient {
   Future<Map<String, dynamic>> machineInfo() async =>
       (await _send('GET', '/v1/machine') as Map).cast<String, dynamic>();
 
+  /// Plan limits of Claude and Codex on the machine (newer bridges).
+  Future<MachineLimits> limits() async =>
+      MachineLimits.fromJson((await _send('GET', '/v1/limits') as Map).cast<String, dynamic>());
+
   Future<Agent> agent(String agentId) async =>
       Agent.fromJson(machine.machineId, (await _send('GET', '/v1/agents/$agentId') as Map).cast<String, dynamic>());
 

@@ -394,3 +394,67 @@ class AgentNotification {
         _ => 'Huntaway',
       };
 }
+
+/// One window of a plan limit (`GET /v1/limits`).
+class LimitWindow {
+  LimitWindow(this.id, this.label, this.usedPercent, this.resetsAt);
+  final String id;
+  final String label;
+  final double usedPercent;
+  final DateTime? resetsAt;
+
+  factory LimitWindow.fromJson(Map<String, dynamic> j) => LimitWindow(
+        j['id'] as String? ?? '',
+        j['label'] as String? ?? '',
+        ((j['used_percent'] as num?) ?? 0).toDouble(),
+        j['resets_at'] == null ? null : DateTime.fromMillisecondsSinceEpoch((j['resets_at'] as num).toInt() * 1000),
+      );
+
+  /// As it is now: past its reset, back to 0 %.
+  LimitWindow live(DateTime now) =>
+      resetsAt != null && !resetsAt!.isAfter(now) ? LimitWindow(id, label, 0, null) : this;
+}
+
+/// Plan limits of one agent provider (Claude, Codex) on a machine.
+class ProviderLimits {
+  ProviderLimits(this.kind, this.plan, this.windows, this.updatedAt, this.source, this.error);
+  final String kind;
+  final String? plan;
+  final List<LimitWindow> windows;
+  final DateTime? updatedAt;
+
+  /// `api` or `session` (latest session file: the last use).
+  final String source;
+  final String? error;
+
+  factory ProviderLimits.fromJson(Map<String, dynamic> j) => ProviderLimits(
+        j['kind'] as String? ?? '',
+        j['plan'] as String?,
+        [for (final w in (j['windows'] as List? ?? const [])) LimitWindow.fromJson((w as Map).cast<String, dynamic>())],
+        j['updated_at'] == null ? null : DateTime.fromMillisecondsSinceEpoch((j['updated_at'] as num).toInt() * 1000),
+        j['source'] as String? ?? 'api',
+        j['error'] as String?,
+      );
+
+  List<LimitWindow> liveWindows(DateTime now) => [for (final w in windows) w.live(now)];
+
+  /// The most used window now.
+  LimitWindow? peak(DateTime now) {
+    LimitWindow? best;
+    for (final w in liveWindows(now)) {
+      if (best == null || w.usedPercent > best.usedPercent) best = w;
+    }
+    return best;
+  }
+}
+
+class MachineLimits {
+  MachineLimits(this.providers);
+  final List<ProviderLimits> providers;
+
+  factory MachineLimits.fromJson(Map<String, dynamic> j) => MachineLimits(
+      [for (final p in (j['providers'] as List? ?? const [])) ProviderLimits.fromJson((p as Map).cast<String, dynamic>())]);
+
+  /// Providers with something to show.
+  List<ProviderLimits> get shown => providers.where((p) => p.windows.isNotEmpty || p.error != null).toList();
+}
