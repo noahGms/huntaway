@@ -12,6 +12,8 @@ interface PrefsState {
   /** `projectKey()` of the favorite projects. */
   favorites: string[];
   machineOrder: string[];
+  /** `projectKey()` of the sidebar projects, in the order set by the user. */
+  projectOrder: string[];
   /** Collapsed sidebar tree nodes (`m:<machine>`, `p:<machine>|<project>`). */
   collapsed: string[];
   /** Past conversations (no agent running) show in the sidebar. */
@@ -29,6 +31,8 @@ interface PrefsState {
   toggleGroupMachine: (groupId: string, machineId: string) => void;
   toggleFavorite: (key: string) => void;
   setMachineOrder: (ids: string[]) => void;
+  /** Moves `key` one place among `siblings` (the projects shown, in order). */
+  moveProject: (key: string, siblings: string[], delta: -1 | 1) => void;
   toggleCollapsed: (id: string) => void;
   expand: (ids: string[]) => void;
   setShowPast: (v: boolean) => void;
@@ -47,6 +51,7 @@ export const usePrefs = create<PrefsState>()(
       groups: [],
       favorites: [],
       machineOrder: [],
+      projectOrder: [],
       collapsed: [],
       showPast: true,
       archived: [],
@@ -69,6 +74,16 @@ export const usePrefs = create<PrefsState>()(
         set((s) => ({ groups: s.groups.map((g) => (g.id === groupId ? { ...g, machineIds: toggle(g.machineIds, machineId) } : g)) })),
       toggleFavorite: (key) => set((s) => ({ favorites: toggle(s.favorites, key) })),
       setMachineOrder: (machineOrder) => set({ machineOrder }),
+      moveProject: (key, siblings, delta) =>
+        set((s) => {
+          const i = siblings.indexOf(key);
+          const j = i + delta;
+          if (i === -1 || j < 0 || j >= siblings.length) return s;
+          const next = [...siblings];
+          [next[i], next[j]] = [next[j], next[i]];
+          // The shown projects take their new places; the others keep theirs after.
+          return { projectOrder: [...next, ...s.projectOrder.filter((k) => !next.includes(k))] };
+        }),
       toggleCollapsed: (id) => set((s) => ({ collapsed: toggle(s.collapsed, id) })),
       expand: (ids) => set((s) => (ids.some((id) => s.collapsed.includes(id)) ? { collapsed: s.collapsed.filter((x) => !ids.includes(x)) } : s)),
       setShowPast: (showPast) => set({ showPast }),
@@ -91,6 +106,7 @@ export const usePrefs = create<PrefsState>()(
         groups: s.groups,
         favorites: s.favorites,
         machineOrder: s.machineOrder,
+        projectOrder: s.projectOrder,
         collapsed: s.collapsed,
         showPast: s.showPast,
         archived: s.archived,

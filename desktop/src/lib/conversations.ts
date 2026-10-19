@@ -177,6 +177,36 @@ function projectGroups(list: Conversation[]): Group[] {
   return [...map.values()].sort((a, b) => latest(b.items) - latest(a.items));
 }
 
+/**
+ * Projects in a fixed order, so the list does not move under the cursor:
+ * favorites, then the user's order, then by name.
+ */
+export function sortProjects(groups: Group[], favorites: ReadonlySet<string>, order: readonly string[]): Group[] {
+  const rank = (id: string) => {
+    const i = order.indexOf(id);
+    return i === -1 ? Infinity : i;
+  };
+  return [...groups].sort(
+    (a, b) =>
+      Number(favorites.has(b.id)) - Number(favorites.has(a.id)) ||
+      (rank(a.id) === rank(b.id) ? 0 : rank(a.id) < rank(b.id) ? -1 : 1) ||
+      a.label.localeCompare(b.label, undefined, { sensitivity: "base" }) ||
+      a.id.localeCompare(b.id),
+  );
+}
+
+/**
+ * Fixed order inside a project: live agents, newest started first, then past
+ * conversations, most recent first. A status change moves nothing (the
+ * Waiting section and the status dots show what needs attention).
+ */
+export function compareStable(a: Conversation, b: Conversation): number {
+  if (a.live !== b.live) return a.live ? -1 : 1;
+  // An agent without a start date yet is new: on top.
+  const time = (c: Conversation) => parseTime(c.live ? (c.agent?.started_at ?? null) : c.lastActivity) ?? Number.MAX_SAFE_INTEGER;
+  return time(b) - time(a) || a.key.localeCompare(b.key);
+}
+
 function latest(items: Conversation[]): number {
   let t = 0;
   for (const c of items) t = Math.max(t, parseTime(c.lastActivity) ?? 0);
@@ -188,7 +218,19 @@ const isWaiting = (c: Conversation) => c.attention?.status === "blocked";
 export type SidebarRow =
   | { type: "header"; id: string; label: string; waiting?: boolean }
   | { type: "machine"; id: string; machineId: string; name: string; count: number; waiting: number; collapsed: boolean }
-  | { type: "project"; id: string; machineId: string; project: string; count: number; waiting: number; collapsed: boolean; favorite: boolean; depth: number }
+  | {
+      type: "project";
+      id: string;
+      machineId: string;
+      project: string;
+      count: number;
+      waiting: number;
+      collapsed: boolean;
+      favorite: boolean;
+      depth: number;
+      /** `projectKey()` of the machine's projects, in display order (to move this one). */
+      siblings: string[];
+    }
   | { type: "conv"; id: string; conv: Conversation; depth: number; suffix?: string; tree?: ConvTree }
   | { type: "inactive"; id: string; hidden: number; showing: boolean };
 
@@ -198,6 +240,8 @@ export interface SidebarOptions {
   machines: { id: string; name: string }[];
   collapsed: ReadonlySet<string>;
   favorites: ReadonlySet<string>;
+  /** `projectKey()` in the order set by the user; others follow by name. */
+  projectOrder?: readonly string[];
   /** Projects idle for this many days are hidden (0 = never). */
   inactiveDays: number;
   showInactive: boolean;
@@ -349,12 +393,24 @@ export function buildSidebarRows(all: Conversation[], opts: SidebarOptions): Sid
         if (machineCollapsed) continue;
       }
       const depth = multi ? 1 : 0;
-      const projects = projectGroups(items).sort((a, b) => Number(opts.favorites.has(b.id)) - Number(opts.favorites.has(a.id)));
+      const projects = sortProjects(projectGroups(items), opts.favorites, opts.projectOrder ?? []);
+      const siblings = projects.map((p) => p.id);
       for (const p of projects) {
         const id = `p:${p.id}`;
         const collapsed = opts.collapsed.has(id);
-        rows.push({ type: "project", id, machineId: m.id, project: p.label, count: p.items.length, waiting: p.items.filter(isWaiting).length, collapsed, favorite: opts.favorites.has(p.id), depth });
-        if (!collapsed) for (const c of p.items) pushConv(c, c.key, depth + 1);
+        rows.push({
+          type: "project",
+          id,
+          machineId: m.id,
+          project: p.label,
+          count: p.items.length,
+          waiting: p.items.filter(isWaiting).length,
+          collapsed,
+          favorite: opts.favorites.has(p.id),
+          depth,
+          siblings,
+        });
+        if (!collapsed) for (const c of [...p.items].sort(compareStable)) pushConv(c, c.key, depth + 1);
       }
     }
   }

@@ -48,10 +48,23 @@ describe("buildSidebarRows", () => {
 
   it("builds a machine → project tree with counts and pinned waiting agents", () => {
     const rows = buildSidebarRows(list, opts({ machines }));
-    expect(rows.map((r) => r.id)).toEqual(["h-waiting", "w-b", "m:m", "p:m|api", "a", "m:vps", "p:vps|web", "b", "p:vps|api", "c"]);
+    // Projects by name, not by activity.
+    expect(rows.map((r) => r.id)).toEqual(["h-waiting", "w-b", "m:m", "p:m|api", "a", "m:vps", "p:vps|api", "c", "p:vps|web", "b"]);
     const vps = rows.find((r) => r.id === "m:vps");
     expect(vps).toMatchObject({ count: 2, waiting: 1 });
     expect(rows[1]).toMatchObject({ suffix: "web · vps" });
+  });
+  it("keeps the user's project order and does not move rows on status changes", () => {
+    const rows = buildSidebarRows(list, opts({ machines, projectOrder: ["vps|web", "vps|api"] }));
+    expect(rows.filter((r) => r.type === "project").map((r) => r.id)).toEqual(["p:m|api", "p:vps|web", "p:vps|api"]);
+    const agents = [conv("x", "2026-10-17T09:00:00", "done", "api"), conv("y", "2026-10-17T11:00:00", "done", "api")].map((c, i) => ({
+      ...c,
+      agent: { started_at: `2026-10-1${i}T08:00:00` } as Conversation["agent"],
+    }));
+    const order = (l: Conversation[]) => buildSidebarRows(l, opts()).filter((r) => r.type === "conv").map((r) => r.id);
+    expect(order(agents)).toEqual(["y", "x"]);
+    // x starts working and gets newer activity: same place.
+    expect(order([{ ...agents[0], attention: { status: "working" }, lastActivity: "2026-10-17T11:59:00" }, agents[1]])).toEqual(["y", "x"]);
   });
   it("skips the machine level with a single machine", () => {
     const rows = buildSidebarRows(list.filter((c) => c.machineId === "m"), opts());

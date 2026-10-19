@@ -1,5 +1,5 @@
 import { openPath } from "@tauri-apps/plugin-opener";
-import { Archive, ArchiveRestore, Check, ChevronDown, ChevronRight, Clock, Copy, Eye, FolderGit2, FolderOpen, History, Layers, Monitor, Plus, Puzzle, Search, Server, Settings, SlidersHorizontal, Square, SquareTerminal, Star, ArrowUpRight, Boxes } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Clock, Copy, Eye, FolderGit2, FolderOpen, History, Layers, Monitor, Plus, Puzzle, Search, Server, Settings, SlidersHorizontal, Square, SquareTerminal, Star, ArrowUpRight, Boxes } from "lucide-react";
 import { memo, useEffect, useMemo, useRef } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { errorMessage } from "../../api/client";
@@ -61,10 +61,11 @@ export function Sidebar() {
         machines: spaceMachines,
         collapsed,
         favorites,
+        projectOrder: prefs.projectOrder,
         inactiveDays: prefs.inactiveDays,
         showInactive: prefs.showInactive,
       }),
-    [filtered, grouping, spaceMachines, collapsed, favorites, prefs.inactiveDays, prefs.showInactive],
+    [filtered, grouping, spaceMachines, collapsed, favorites, prefs.projectOrder, prefs.inactiveDays, prefs.showInactive],
   );
   // Every machine, so that a hidden space needing attention still shows.
   const waiting = useMemo(() => conversations.filter((c) => c.attention?.status === "blocked").length, [conversations]);
@@ -226,36 +227,62 @@ const ProjectRow = memo(function ProjectRow({ row }: { row: Extract<SidebarRow, 
   const openProject = useUi((s) => s.openProject);
   const key = projectKey(row.machineId, row.project);
   return (
-    <div className="group px-1.5">
-      <div className="flex h-7 items-center gap-1.5 rounded-md pr-1.5 hover:bg-surface-high/50" style={indent(row.depth)}>
-        <button onClick={() => toggle(row.id)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" aria-expanded={!row.collapsed}>
-          {row.collapsed ? <ChevronRight size={13} className="shrink-0 text-faint" /> : <ChevronDown size={13} className="shrink-0 text-faint" />}
-          <FolderGit2 size={13} className="shrink-0 text-faint" />
-          <span className="min-w-0 truncate text-[12.5px] text-muted">{row.project}</span>
-        </button>
-        <span className={`shrink-0 items-center gap-1 ${row.favorite ? "flex" : "hidden group-hover:flex"}`}>
-          <button
-            onClick={() => toggleFavorite(key)}
-            className={row.favorite ? "text-blocked" : "text-faint hover:text-text"}
-            title={row.favorite ? "Remove from favorites" : "Add to favorites"}
-            aria-label={row.favorite ? "Remove from favorites" : "Add to favorites"}
-          >
-            <Star size={12} fill={row.favorite ? "currentColor" : "none"} />
+    <ContextMenu content={<ProjectMenu row={row} projectId={key} />}>
+      <div className="group px-1.5">
+        <div className="flex h-7 items-center gap-1.5 rounded-md pr-1.5 hover:bg-surface-high/50" style={indent(row.depth)}>
+          <button onClick={() => toggle(row.id)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" aria-expanded={!row.collapsed}>
+            {row.collapsed ? <ChevronRight size={13} className="shrink-0 text-faint" /> : <ChevronDown size={13} className="shrink-0 text-faint" />}
+            <FolderGit2 size={13} className="shrink-0 text-faint" />
+            <span className="min-w-0 truncate text-[12.5px] text-muted">{row.project}</span>
           </button>
-        </span>
-        <button
-          onClick={() => openProject(row.machineId, row.project)}
-          className="hidden shrink-0 text-faint hover:text-text group-hover:block"
-          title="Open project"
-          aria-label="Open project"
-        >
-          <ArrowUpRight size={13} />
-        </button>
-        <Count count={row.count} waiting={row.waiting} />
+          <span className={`shrink-0 items-center gap-1 ${row.favorite ? "flex" : "hidden group-hover:flex"}`}>
+            <button
+              onClick={() => toggleFavorite(key)}
+              className={row.favorite ? "text-blocked" : "text-faint hover:text-text"}
+              title={row.favorite ? "Remove from favorites" : "Add to favorites"}
+              aria-label={row.favorite ? "Remove from favorites" : "Add to favorites"}
+            >
+              <Star size={12} fill={row.favorite ? "currentColor" : "none"} />
+            </button>
+          </span>
+          <button
+            onClick={() => openProject(row.machineId, row.project)}
+            className="hidden shrink-0 text-faint hover:text-text group-hover:block"
+            title="Open project"
+            aria-label="Open project"
+          >
+            <ArrowUpRight size={13} />
+          </button>
+          <Count count={row.count} waiting={row.waiting} />
+        </div>
       </div>
-    </div>
+    </ContextMenu>
   );
 });
+
+/** Right click on a project. */
+function ProjectMenu({ row, projectId }: { row: Extract<SidebarRow, { type: "project" }>; projectId: string }) {
+  const { toggleFavorite, moveProject } = usePrefs();
+  const openProject = useUi((s) => s.openProject);
+  const i = row.siblings.indexOf(projectId);
+  return (
+    <>
+      <MenuItem icon={<ArrowUp size={14} />} disabled={i <= 0} onSelect={() => moveProject(projectId, row.siblings, -1)}>
+        Move up
+      </MenuItem>
+      <MenuItem icon={<ArrowDown size={14} />} disabled={i === -1 || i >= row.siblings.length - 1} onSelect={() => moveProject(projectId, row.siblings, 1)}>
+        Move down
+      </MenuItem>
+      <MenuSeparator />
+      <MenuItem icon={<Star size={14} />} onSelect={() => toggleFavorite(projectId)}>
+        {row.favorite ? "Remove from favorites" : "Add to favorites"}
+      </MenuItem>
+      <MenuItem icon={<ArrowUpRight size={14} />} onSelect={() => openProject(row.machineId, row.project)}>
+        Open project
+      </MenuItem>
+    </>
+  );
+}
 
 const ConversationRow = memo(function ConversationRow({
   conv,
