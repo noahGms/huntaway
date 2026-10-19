@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSidebarRows, compactAge, groupConversations, inactiveProjects, projectsOf, searchConversations, type Conversation, type SidebarOptions } from "./conversations";
+import { buildSidebarRows, compactAge, groupConversations, inactiveProjects, liveKey, nestConversations, projectsOf, searchConversations, treeCollapsedId, treeExpandedId, type Conversation, type SidebarOptions } from "./conversations";
 import { moveMachine, orderMachines, spaceMachineIds } from "./spaces";
 
 const conv = (key: string, last: string, status: "blocked" | "done" | null, project = "api", machineId = "m", machineName = "Mac"): Conversation => ({
@@ -114,5 +114,47 @@ describe("spaces", () => {
     expect(sorted.map((x) => (x.record as { machine_id: string }).machine_id)).toEqual(["c", "a", "b"]);
     expect(moveMachine(["a", "b", "c"], "b", -1)).toEqual(["b", "a", "c"]);
     expect(moveMachine(["a", "b"], "a", -1)).toEqual(["a", "b"]);
+  });
+});
+
+describe("nested agents", () => {
+  const live = (key: string, agentId: string, parent: string | null, status: "blocked" | "done"): Conversation => ({
+    ...conv(liveKey("m", agentId), "2026-10-17T11:00:00", status),
+    title: key,
+    agentId,
+    agent: { id: agentId, parent_id: parent } as Conversation["agent"],
+  });
+
+  it("puts children under their parent, folded unless one is waiting", () => {
+    const list = [live("parent", "s:p1", null, "done"), live("child", "s:p2", "s:p1", "done"), live("grandchild", "s:p3", "s:p2", "done")];
+    const rows = buildSidebarRows(list, opts({ grouping: "date" }));
+    const convs = rows.filter((r) => r.type === "conv");
+    expect(convs.map((r) => r.type === "conv" && r.conv.title)).toEqual(["parent"]);
+    const parent = convs[0];
+    expect(parent.type === "conv" && parent.tree?.total).toBe(2);
+    expect(parent.type === "conv" && parent.tree?.expanded).toBe(false);
+  });
+
+  it("opens and pins the parent when a child waits", () => {
+    const list = [live("parent", "s:p1", null, "done"), live("child", "s:p2", "s:p1", "blocked")];
+    const rows = buildSidebarRows(list, opts({ grouping: "date" }));
+    expect(rows.map((r) => (r.type === "conv" ? `${r.depth}:${r.conv.title}` : r.type))).toEqual(["header", "0:parent", "1:child"]);
+    const parent = rows[1];
+    expect(parent.type === "conv" && parent.tree?.rollup?.status).toBe("blocked");
+  });
+
+  it("follows the collapsed state chosen by the user", () => {
+    const list = [live("parent", "s:p1", null, "done"), live("child", "s:p2", "s:p1", "blocked")];
+    const collapsed = new Set([treeCollapsedId(liveKey("m", "s:p1"))]);
+    const rows = buildSidebarRows(list, opts({ grouping: "date", collapsed }));
+    expect(rows.filter((r) => r.type === "conv").length).toBe(1);
+    const expanded = new Set([treeExpandedId(liveKey("m", "s:p1"))]);
+    const quiet = [live("parent", "s:p1", null, "done"), live("child", "s:p2", "s:p1", "done")];
+    expect(buildSidebarRows(quiet, opts({ grouping: "date", collapsed: expanded })).filter((r) => r.type === "conv").length).toBe(2);
+  });
+
+  it("keeps agents of a cycle visible", () => {
+    const { roots } = nestConversations([live("a", "s:p1", "s:p2", "done"), live("b", "s:p2", "s:p1", "done")]);
+    expect(roots.length).toBe(2);
   });
 });

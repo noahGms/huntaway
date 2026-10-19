@@ -182,7 +182,7 @@ export type SidebarRow =
   | { type: "header"; id: string; label: string; waiting?: boolean }
   | { type: "machine"; id: string; machineId: string; name: string; count: number; waiting: number; collapsed: boolean }
   | { type: "project"; id: string; machineId: string; project: string; count: number; waiting: number; collapsed: boolean; favorite: boolean; depth: number }
-  | { type: "conv"; id: string; conv: Conversation; depth: number; suffix?: string }
+  | { type: "conv"; id: string; conv: Conversation; depth: number; suffix?: string; tree?: ConvTree }
   | { type: "inactive"; id: string; hidden: number; showing: boolean };
 
 export interface SidebarOptions {
@@ -195,6 +195,76 @@ export interface SidebarOptions {
   inactiveDays: number;
   showInactive: boolean;
   now?: number;
+}
+
+/** Agents started by an agent shown in the list, under that agent. */
+export interface ConvTree {
+  children: Conversation[];
+  /** Descendants, all levels. */
+  total: number;
+  expanded: boolean;
+  /** Most urgent state of the conversation and its descendants. */
+  rollup: Attention | null;
+}
+
+const urgency = (a: Attention | null | undefined) => (!a ? 9 : a.status === "blocked" ? 0 : a.status === "working" ? 1 : 5);
+
+/** The most urgent of two states (blocked, then working). */
+export function moreUrgent(a: Attention | null, b: Attention | null): Attention | null {
+  return urgency(b) < urgency(a) ? b : a;
+}
+
+/**
+ * Splits live conversations into roots and children: an agent whose
+ * `parent_id` names another live agent of the list goes under it.
+ */
+export function nestConversations(list: Conversation[]): { roots: Conversation[]; childrenOf: Map<string, Conversation[]> } {
+  const keys = new Set(list.map((c) => c.key));
+  const childrenOf = new Map<string, Conversation[]>();
+  const roots: Conversation[] = [];
+  for (const c of list) {
+    const parent = c.agent?.parent_id ? liveKey(c.machineId, c.agent.parent_id) : null;
+    if (parent && parent !== c.key && keys.has(parent)) {
+      const items = childrenOf.get(parent) ?? [];
+      items.push(c);
+      childrenOf.set(parent, items);
+    } else {
+      roots.push(c);
+    }
+  }
+  // A cycle leaves its members without a root: show them at the top level.
+  const reachable = new Set<string>();
+  const visit = (k: string) => {
+    if (reachable.has(k)) return;
+    reachable.add(k);
+    for (const c of childrenOf.get(k) ?? []) visit(c.key);
+  };
+  for (const r of roots) visit(r.key);
+  for (const c of list) if (!reachable.has(c.key)) roots.push(c);
+  return { roots, childrenOf };
+}
+
+/** Collapsed state of a conversation's children: `c:` = collapsed, `x:` = expanded by the user. */
+export const treeCollapsedId = (key: string) => `c:${key}`;
+export const treeExpandedId = (key: string) => `x:${key}`;
+
+function treeOf(c: Conversation, childrenOf: Map<string, Conversation[]>, collapsed: ReadonlySet<string>, seen = new Set<string>()): ConvTree | undefined {
+  const children = childrenOf.get(c.key);
+  if (!children?.length || seen.has(c.key)) return undefined;
+  seen.add(c.key);
+  let total = 0;
+  let rollup: Attention | null = c.attention;
+  let childAttention: Attention | null = null;
+  for (const child of children) {
+    const sub = treeOf(child, childrenOf, collapsed, seen);
+    total += 1 + (sub?.total ?? 0);
+    const r = sub?.rollup ?? child.attention;
+    rollup = moreUrgent(rollup, r);
+    childAttention = moreUrgent(childAttention, r);
+  }
+  // Open by default while a child needs attention.
+  const expanded = collapsed.has(treeExpandedId(c.key)) || (!collapsed.has(treeCollapsedId(c.key)) && childAttention?.status === "blocked");
+  return { children, total, expanded, rollup };
 }
 
 /** Projects that are idle: no live agent, not a favorite, no activity for `days`. */
@@ -218,27 +288,43 @@ export function inactiveProjects(list: Conversation[], favorites: ReadonlySet<st
  * machines); the rest is grouped by date, or as a Machine → Project tree
  * (the machine level is skipped when the space has a single machine).
  */
-export function buildSidebarRows(list: Conversation[], opts: SidebarOptions): SidebarRow[] {
+export function buildSidebarRows(all: Conversation[], opts: SidebarOptions): SidebarRow[] {
   const now = opts.now ?? Date.now();
   const multi = opts.machines.length > 1;
+  const { roots: list, childrenOf } = nestConversations(all);
+  const trees = new Map<string, ConvTree>();
+  for (const c of all) {
+    const t = treeOf(c, childrenOf, opts.collapsed);
+    if (t) trees.set(c.key, t);
+  }
+  const isWaiting = (c: Conversation) => (trees.get(c.key)?.rollup ?? c.attention)?.status === "blocked";
   const inactive = inactiveProjects(list, opts.favorites, opts.inactiveDays, now);
   const visible = opts.showInactive || !inactive.size ? list : list.filter((c) => !inactive.has(projectKey(c.machineId, c.project)));
   // Project (and machine) suffix, unless everything shown shares them.
   const oneProject = !multi && new Set(visible.map((c) => c.project)).size <= 1;
   const suffix = (c: Conversation) => (oneProject ? undefined : multi ? `${c.project} · ${c.machineName}` : c.project);
   const rows: SidebarRow[] = [];
+  /** The conversation, then its children when expanded. */
+  const pushConv = (c: Conversation, id: string, depth: number, sfx?: string, seen = new Set<string>()) => {
+    const tree = trees.get(c.key);
+    rows.push({ type: "conv", id, conv: c, depth, suffix: sfx, tree });
+    if (!tree?.expanded || seen.has(c.key)) return;
+    seen.add(c.key);
+    for (const child of tree.children) pushConv(child, `${id}>${child.key}`, depth + 1, undefined, seen);
+  };
 
   const waiting = visible.filter(isWaiting);
   if (waiting.length) {
     rows.push({ type: "header", id: "h-waiting", label: "Waiting", waiting: true });
-    for (const c of waiting) rows.push({ type: "conv", id: `w-${c.key}`, conv: c, depth: 0, suffix: suffix(c) });
+    for (const c of waiting) pushConv(c, `w-${c.key}`, 0, suffix(c));
   }
 
   if (opts.grouping === "date") {
     for (const g of groupConversations(visible, "date", now)) {
-      if (g.id === "waiting") continue;
+      const items = g.items.filter((c) => !isWaiting(c));
+      if (g.id === "waiting" || !items.length) continue;
       rows.push({ type: "header", id: `h-${g.id}`, label: g.label });
-      for (const c of g.items) rows.push({ type: "conv", id: c.key, conv: c, depth: 0, suffix: suffix(c) });
+      for (const c of items) pushConv(c, c.key, 0, suffix(c));
     }
   } else {
     const byMachine = new Map<string, Conversation[]>();
@@ -261,7 +347,7 @@ export function buildSidebarRows(list: Conversation[], opts: SidebarOptions): Si
         const id = `p:${p.id}`;
         const collapsed = opts.collapsed.has(id);
         rows.push({ type: "project", id, machineId: m.id, project: p.label, count: p.items.length, waiting: p.items.filter(isWaiting).length, collapsed, favorite: opts.favorites.has(p.id), depth });
-        if (!collapsed) for (const c of p.items) rows.push({ type: "conv", id: c.key, conv: c, depth: depth + 1 });
+        if (!collapsed) for (const c of p.items) pushConv(c, c.key, depth + 1);
       }
     }
   }

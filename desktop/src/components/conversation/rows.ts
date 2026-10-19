@@ -16,6 +16,7 @@ export type Row =
   | { kind: "plan"; key: string; item: Extract<StoredItem, { type: "todos_updated" }>; latest: boolean; continued: boolean }
   | { kind: "question"; key: string; item: Extract<StoredItem, { type: "question_asked" }>; result?: ToolResultItem; continued: boolean }
   | { kind: "subagent"; key: string; items: StoredItem[]; continued: boolean }
+  | { kind: "thinking"; key: string; item: Extract<StoredItem, { type: "thinking" }>; continued: boolean }
   | { kind: "turn"; key: string; item: Extract<StoredItem, { type: "turn_ended" }> }
   | { kind: "away"; key: string; item: Extract<StoredItem, { type: "away_summary" }> }
   | { kind: "notice"; key: string; item: Extract<StoredItem, { type: "notice" }> };
@@ -70,6 +71,10 @@ export function buildRows(items: StoredItem[]): Row[] {
         agentTurn = true;
         break;
       }
+      case "thinking":
+        push({ kind: "thinking", key, item: it, continued: agentTurn });
+        agentTurn = true;
+        break;
       case "todos_updated":
         push({ kind: "plan", key, item: it, latest: it.n === lastPlan, continued: agentTurn });
         agentTurn = true;

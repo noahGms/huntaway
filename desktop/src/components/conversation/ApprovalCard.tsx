@@ -38,8 +38,12 @@ function toolPreview(input: unknown) {
   return <CodeBlock code={json.slice(0, 4000)} lang="json" maxHeight={180} />;
 }
 
-/** Card for the prompt the agent shows; mount it with `key={interaction.id}`. */
-export function ApprovalCard({ machineId, agent }: { machineId: string; agent: AgentView }) {
+/**
+ * Card for the prompt the agent shows; mount it with `key={interaction.id}`.
+ * `embedded`: inside another card (an agent started by this one), without
+ * its own frame and keyboard shortcuts.
+ */
+export function ApprovalCard({ machineId, agent, embedded = false }: { machineId: string; agent: AgentView; embedded?: boolean }) {
   const interaction = agent.interaction!;
   const machine = useMachines((s) => s.machines[machineId]);
   const toast = useUi((s) => s.toast);
@@ -78,7 +82,7 @@ export function ApprovalCard({ machineId, agent }: { machineId: string; agent: A
   // 1–9 pick an option, Esc opens the deny form (when no text field has focus
   // and no menu or dialog takes the keys).
   useEffect(() => {
-    if (!allowed) return;
+    if (!allowed || embedded) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || overlayOpen()) return;
       const t = e.target as HTMLElement | null;
@@ -116,7 +120,13 @@ export function ApprovalCard({ machineId, agent }: { machineId: string; agent: A
   const plan = interaction.reason === "plan" ? ((interaction.tool?.input as { plan?: string } | null)?.plan ?? null) : null;
 
   return (
-    <div className="mx-6 mb-3 overflow-hidden rounded-2xl border border-blocked/45 bg-[#1d1a16] shadow-[0_0_0_4px_rgba(227,155,75,0.06)] animate-fade-in">
+    <div
+      className={
+        embedded
+          ? "overflow-hidden bg-[#1d1a16]"
+          : "overflow-hidden rounded-2xl border border-blocked/45 bg-[#1d1a16] shadow-[0_0_0_4px_rgba(227,155,75,0.06)] animate-fade-in"
+      }
+    >
       <div className="flex items-center gap-2 border-b border-blocked/20 px-4 py-2.5 text-blocked">
         {header.icon}
         <span className="text-[13px] font-semibold">{header.title}</span>
@@ -170,7 +180,7 @@ export function ApprovalCard({ machineId, agent }: { machineId: string; agent: A
                 onClick={() => void choose(o)}
                 title={o.detail ?? undefined}
               >
-                <Kbd>{o.number}</Kbd>
+                {!embedded && <Kbd>{o.number}</Kbd>}
                 <span className="max-w-[320px] truncate">{o.label}</span>
               </Button>
             ))}
@@ -181,7 +191,7 @@ export function ApprovalCard({ machineId, agent }: { machineId: string; agent: A
         </Button>
         {allowed && interaction.reason === "approval" && !showDeny && (
           <Button size="sm" variant="danger" disabled={busy !== null} onClick={() => setShowDeny(true)}>
-            Deny… <Kbd>Esc</Kbd>
+            Deny… {!embedded && <Kbd>Esc</Kbd>}
           </Button>
         )}
       </div>

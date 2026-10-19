@@ -1,5 +1,6 @@
 import {
   Bot,
+  Brain,
   Check,
   ChevronRight,
   CircleDashed,
@@ -16,7 +17,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 import type { StoredItem } from "../../api/types";
 import { changeDiff } from "../../lib/diff";
 import { clockTime, duration, shortPath } from "../../lib/format";
@@ -26,8 +27,13 @@ import { DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
 import type { Row, ToolCallItem, ToolResultItem } from "./rows";
 
+/** Rows inside a turn's work block: no avatar column, no header. */
+export const CompactRows = createContext(false);
+
 /** Avatar column + name/time header, as in the mockup. */
 function Block({ who, kind, time, continued, children }: { who: "user" | "agent"; kind: string; time?: string; continued?: boolean; children: ReactNode }) {
+  const compact = useContext(CompactRows);
+  if (compact) return <div className="min-w-0 pt-0.5">{children}</div>;
   return (
     <div className={`flex gap-3.5 px-6 ${continued ? "pt-1.5" : "pt-5"}`}>
       <div className="w-8 shrink-0">
@@ -111,6 +117,12 @@ export function RowView({ row, kind }: { row: Row; kind: string }) {
           <ToolLine call={row.call} result={row.result} />
         </Block>
       );
+    case "thinking":
+      return (
+        <Block who="agent" kind={kind} time={row.item.timestamp} continued={row.continued}>
+          <Thinking text={row.item.text} />
+        </Block>
+      );
     case "plan":
       return (
         <Block who="agent" kind={kind} time={row.item.timestamp} continued={row.continued}>
@@ -120,24 +132,36 @@ export function RowView({ row, kind }: { row: Row; kind: string }) {
     case "question":
       return (
         <Block who="agent" kind={kind} time={row.item.timestamp} continued={row.continued}>
-          <Card icon={<MessageCircleQuestion size={15} />} title="Question" right={row.result && <span className="text-[11.5px] text-faint">answered</span>}>
-            <div className="space-y-3 border-t border-border px-3.5 py-3">
+          {row.result ? (
+            <div className="mt-1.5 space-y-0.5 rounded-xl border border-border bg-surface px-3.5 py-2.5 text-[12.5px]">
               {row.item.questions.map((q, i) => (
-                <div key={i}>
-                  {q.header && <div className="mb-0.5 text-[11px] uppercase tracking-wider text-faint">{q.header}</div>}
-                  <div className="selectable text-[13px]">{q.question}</div>
-                  <div className="mt-1.5 flex flex-wrap gap-1.5">
-                    {q.options.map((o) => (
-                      <span key={o.label} className="rounded-md border border-border bg-bg px-2 py-0.5 text-[12px] text-muted" title={o.description ?? undefined}>
-                        {o.label}
-                      </span>
-                    ))}
-                  </div>
+                <div key={i} className="flex items-start gap-2 text-muted">
+                  <MessageCircleQuestion size={13} className="mt-[3px] shrink-0" />
+                  <span className="selectable">{q.question}</span>
                 </div>
               ))}
-              {row.result && <div className="selectable text-[12.5px] text-muted">→ {row.result.summary}</div>}
+              <div className="selectable pl-5 text-text">→ {row.result.summary}</div>
             </div>
-          </Card>
+          ) : (
+            <Card icon={<MessageCircleQuestion size={15} />} title="Question">
+              <div className="space-y-3 border-t border-border px-3.5 py-3">
+                {row.item.questions.map((q, i) => (
+                  <div key={i}>
+                    {q.header && <div className="mb-0.5 text-[11px] uppercase tracking-wider text-faint">{q.header}</div>}
+                    <div className="selectable text-[13px]">{q.question}</div>
+                    <ul className="mt-1 space-y-0.5 text-[12.5px] text-muted">
+                      {q.options.map((o) => (
+                        <li key={o.label}>
+                          • {o.label}
+                          {o.description && <span className="text-faint"> — {o.description}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
         </Block>
       );
     case "subagent":
@@ -166,6 +190,22 @@ export function RowView({ row, kind }: { row: Row; kind: string }) {
     case "notice":
       return <div className="selectable px-6 pt-3 text-center text-[12px] text-faint">{row.item.text}</div>;
   }
+}
+
+function Thinking({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-1">
+      <button onClick={() => setOpen(!open)} className="flex items-center gap-1.5 text-[12.5px] text-muted hover:text-text">
+        <ChevronRight size={13} className={`transition-transform ${open ? "rotate-90" : ""}`} />
+        <Brain size={13} />
+        Thinking
+      </button>
+      {open && (
+        <div className="selectable ml-5 mt-1 whitespace-pre-wrap border-l border-border pl-3 text-[12.5px] italic leading-relaxed text-muted">{text}</div>
+      )}
+    </div>
+  );
 }
 
 function ToolGroup({ calls }: { calls: ToolCallItem[] }) {

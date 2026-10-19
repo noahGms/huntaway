@@ -90,16 +90,13 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
   const fileInput = useRef<HTMLInputElement>(null);
 
   const online = machine?.status.state === "online";
-  const blocked = agent.attention.status === "blocked" && agent.attention.reason !== "explicit_question";
-  const allowed = can(machine, "agents.message");
+  // Waiting on a prompt: a message denies it, with the message as the reason.
+  const blocked = agent.attention.status === "blocked" && agent.attention.reason !== "explicit_question" && !!agent.interaction;
+  const canDeny = can(machine, "agents.approve");
+  const allowed = can(machine, "agents.message") && (!blocked || canDeny);
   const canReadFiles = can(machine, "files.read");
-  const disabledReason = !allowed
-    ? "This device can't send messages"
-    : !online
-      ? "Machine offline"
-      : blocked
-        ? "Answer the prompt above first"
-        : null;
+  const disabledReason = !allowed ? (blocked ? "This device can't answer prompts" : "This device can't send messages") : !online ? "Machine offline" : null;
+  const idle = agent.attention.status === "idle" || agent.attention.status === "done";
   const slash =
     text.startsWith("/") && !text.includes(" ") && !text.includes("\n") && slashClosed !== text ? (SLASH[agent.kind] ?? []).filter(([c]) => c.startsWith(text)) : [];
   const popup: { label: string; hint?: string; value: string; icon: React.ReactNode }[] = mention
@@ -213,7 +210,12 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
     const message = paths.length ? `${body}${body ? "\n\n" : ""}${paths.join(" ")}` : body;
     setSending(true);
     try {
-      await api.sendMessage(machineId, agent.id, message);
+      if (blocked && agent.interaction) {
+        const r = await api.deny(machineId, agent.id, agent.interaction.id, message);
+        if (message && r.message_sent === false) toast("Denied, but the explanation couldn't be typed: send it again", "error");
+      } else {
+        await api.sendMessage(machineId, agent.id, message);
+      }
       markSent(machineId, agent.id);
       if (!override) setText("");
       setAttachments([]);
@@ -258,12 +260,16 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
 
   return (
     <div className="px-6 pb-4">
-      {!text && !attachments.length && !disabledReason && (
+      {!text && !attachments.length && !disabledReason && idle && (
         <div className="mb-2 flex flex-wrap gap-1.5">
           {QUICK_REPLIES.map((q) => (
             <button
               key={q}
-              onClick={() => void send(q)}
+              onClick={() => {
+                setText(q);
+                ref.current?.focus();
+              }}
+              title="Put in the message box"
               className="rounded-full border border-border bg-surface px-2.5 py-[3px] text-[11.5px] text-muted transition-colors hover:border-[#3a414c] hover:text-text"
             >
               {q}
@@ -309,7 +315,7 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
           rows={1}
           value={text}
           disabled={!!disabledReason}
-          placeholder={disabledReason ?? "Message…  (@ file, / command)"}
+          placeholder={disabledReason ?? (blocked ? "Deny and say what to do instead… (or answer above)" : "Message…  (@ file, / command)")}
           onChange={(e) => {
             setText(e.target.value);
             updateMention(e.target.value, e.target.selectionStart);
@@ -383,8 +389,8 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
               onClick={() => void send()}
               disabled={!!disabledReason || sending || (!text.trim() && !attachments.length)}
               className="flex h-8 w-8 items-center justify-center rounded-[10px] bg-accent text-on-accent transition-opacity hover:bg-[#fff3e2] disabled:opacity-30"
-              aria-label="Send"
-              title={enterToSend ? "Send (Enter)" : `Send (${MOD} Enter)`}
+              aria-label={blocked ? "Deny with this message" : "Send"}
+              title={`${blocked ? "Deny with this message" : "Send"} (${enterToSend ? "Enter" : `${MOD} Enter`})`}
             >
               {sending ? <Spinner /> : <ArrowUp size={16} strokeWidth={2.5} />}
             </button>

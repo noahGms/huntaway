@@ -1,22 +1,22 @@
 import { openPath } from "@tauri-apps/plugin-opener";
-import { ArrowDown, Copy, FolderOpen, History, MoreHorizontal, PanelRight, Play, RefreshCw, Square, SquareTerminal } from "lucide-react";
+import { ArrowDown, ChevronRight, Copy, FolderOpen, History, MoreHorizontal, PanelRight, Play, RefreshCw, SquareTerminal } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { api, app, errorMessage } from "../../api/client";
-import type { MachineView } from "../../api/types";
+import type { AgentView, MachineView, QueuedMessage } from "../../api/types";
 import { useStop } from "../../hooks/useStop";
-import { historyKey, liveKey, statusLabel, type Conversation } from "../../lib/conversations";
+import { agentTitle, historyKey, liveKey, statusLabel, type Conversation } from "../../lib/conversations";
 import { ALT, MOD } from "../../lib/keys";
 import { modPressed, overlayOpen } from "../../lib/platform";
 import { can, touchTimeline, useMachines } from "../../store/machines";
 import { useUi } from "../../store/ui";
 import { Button, IconButton, Kbd, Spinner } from "../ui/Button";
 import { Menu, MenuItem, MenuSeparator } from "../ui/Menu";
-import { AgentIcon, Badge, attentionTone, StatusDot } from "../ui/Status";
+import { AgentIcon, Badge, attentionTone } from "../ui/Status";
 import { ApprovalCard } from "./ApprovalCard";
 import { Composer } from "./Composer";
-import { buildRows } from "./rows";
-import { RowView } from "./TimelineRows";
+import { buildTurns, type TurnRow } from "./turns";
+import { PlanBar, QueuedMessages, TurnRowView } from "./TurnRows";
 
 const BASE_INDEX = 1_000_000;
 
@@ -38,10 +38,20 @@ export function ConversationView({ conv }: { conv: Conversation }) {
   }, [conv.machineId, conv.agentId, conv.live]);
 
   const items = timeline?.items ?? [];
-  const rows = useMemo(() => buildRows(items), [items]);
+  const working = agent?.attention.status === "working";
+  const rows = useMemo(() => buildTurns(items, working), [items, working]);
   const retry = () => void loadTimeline(conv.key);
   const showApproval = !!agent?.interaction && agent.attention.status === "blocked";
-  const working = agent?.attention.status === "working";
+  const queued = agent?.queued ?? [];
+  // Latest plan, pinned while it has unfinished tasks.
+  const plan = useMemo(() => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.type === "todos_updated") return it.todos;
+    }
+    return null;
+  }, [items]);
+  const showPlan = !!agent && !!plan?.length && plan.some((t) => t.status !== "completed");
 
   return (
     <div className="flex h-full min-w-0 flex-col">
@@ -56,7 +66,7 @@ export function ConversationView({ conv }: { conv: Conversation }) {
             </Button>
           </div>
         )}
-        {timeline?.loaded && !timeline.error && items.length === 0 && (
+        {timeline?.loaded && !timeline.error && items.length === 0 && queued.length === 0 && !showApproval && (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-10 text-center">
             <AgentIcon kind={conv.kind} size={22} />
             <p className="text-[13px] text-muted">
@@ -76,25 +86,23 @@ export function ConversationView({ conv }: { conv: Conversation }) {
             </button>
           </div>
         )}
-        {items.length > 0 && (
+        {(items.length > 0 || queued.length > 0 || showApproval) && (
           <TimelineList
             convKey={conv.key}
             rows={rows}
             kind={conv.kind}
+            machineId={conv.machineId}
+            agent={agent}
             working={working}
             approval={showApproval}
+            queued={queued}
             hasMore={!!timeline?.hasMore}
             loadingOlder={!!timeline?.loading}
             onTop={() => void loadTimeline(conv.key, true)}
           />
         )}
       </div>
-      {agent && showApproval && <ApprovalCard key={agent.interaction!.id} machineId={conv.machineId} agent={agent} />}
-      {agent && agent.attention.status === "blocked" && agent.attention.reason === "explicit_question" && (
-        <div className="mx-6 mb-2 flex items-center gap-2 text-[12px] text-blocked">
-          <StatusDot attention={agent.attention} /> The agent asked you something: reply below.
-        </div>
-      )}
+      {showPlan && <PlanBar todos={plan!} />}
       {agent ? (
         <Composer machineId={conv.machineId} agent={agent} />
       ) : conv.history ? (
@@ -139,6 +147,10 @@ interface ListContext {
   hasMore: boolean;
   loadingOlder: boolean;
   working: boolean;
+  machineId: string;
+  agent?: AgentView;
+  approval: boolean;
+  queued: QueuedMessage[];
 }
 
 function ListHeader({ context }: { context?: ListContext }) {
@@ -149,19 +161,19 @@ function ListHeader({ context }: { context?: ListContext }) {
   );
 }
 
+/** End of the conversation: messages waiting to be read, then the agent's prompt. */
 function ListFooter({ context }: { context?: ListContext }) {
+  const agent = context?.agent;
   return (
-    <div className="px-6 pb-6 pt-3">
-      {context?.working && (
-        <div className="ml-[46px] flex items-center gap-2 text-[12.5px] text-working">
-          <span className="flex gap-1">
-            <span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-working" />
-            <span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-working [animation-delay:200ms]" />
-            <span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-working [animation-delay:400ms]" />
-          </span>
-          Thinking…
-        </div>
-      )}
+    <div className="pb-6">
+      <div className="mx-auto max-w-[920px]">
+        {context && <QueuedMessages queued={context.queued} working={context.working} />}
+        {agent && context?.approval && agent.interaction && (
+          <div className="pl-[70px] pr-6 pt-4">
+            <ApprovalCard key={agent.interaction.id} machineId={context.machineId} agent={agent} />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -172,18 +184,24 @@ function TimelineList({
   convKey,
   rows,
   kind,
+  machineId,
+  agent,
   working,
   approval,
+  queued,
   hasMore,
   loadingOlder,
   onTop,
 }: {
   convKey: string;
-  rows: ReturnType<typeof buildRows>;
+  rows: TurnRow[];
   kind: string;
+  machineId: string;
+  agent?: AgentView;
   working: boolean;
-  /** The approval card shows under the list (and shrinks it). */
+  /** The agent's prompt shows at the end of the list. */
   approval: boolean;
+  queued: QueuedMessage[];
   hasMore: boolean;
   loadingOlder: boolean;
   onTop: () => void;
@@ -200,15 +218,18 @@ function TimelineList({
   }
   const prepended = Math.max(0, rows.findIndex((r) => r.key === anchor.current!.key));
   const firstItemIndex = BASE_INDEX - prepended;
-  const context = useMemo(() => ({ hasMore, loadingOlder, working }), [hasMore, loadingOlder, working]);
+  const context = useMemo(
+    () => ({ hasMore, loadingOlder, working, machineId, agent, approval, queued }),
+    [hasMore, loadingOlder, working, machineId, agent, approval, queued],
+  );
 
-  // "Thinking…" or the approval card appearing must not push the last
+  // The prompt or a queued message appearing must not push the last
   // messages out of view: stay at the bottom if we were there.
   useEffect(() => {
     if (!atBottomRef.current) return;
     const frame = requestAnimationFrame(() => ref.current?.scrollToIndex({ index: "LAST", align: "end" }));
     return () => cancelAnimationFrame(frame);
-  }, [working, approval]);
+  }, [working, approval, queued.length]);
 
   return (
     <>
@@ -219,7 +240,7 @@ function TimelineList({
         data={rows}
         context={context}
         firstItemIndex={firstItemIndex}
-        initialTopMostItemIndex={rows.length - 1}
+        initialTopMostItemIndex={Math.max(0, rows.length - 1)}
         computeItemKey={(_, row) => row.key}
         followOutput={(bottom) => (bottom ? "smooth" : false)}
         atBottomStateChange={setAtBottom}
@@ -229,7 +250,7 @@ function TimelineList({
         components={LIST_COMPONENTS}
         itemContent={(_, row) => (
           <div className="mx-auto max-w-[920px]">
-            <RowView row={row} kind={kind} />
+            <TurnRowView row={row} kind={kind} machineId={machineId} agent={agent} />
           </div>
         )}
       />
@@ -249,7 +270,9 @@ function Header({ conv }: { conv: Conversation }) {
   const { togglePanel, showPanel, setPanelTab, toast } = useUi();
   const online = useMachines((s) => s.machines[conv.machineId]?.status.state === "online");
   const agent = conv.agent;
-  const { canStop, stopping, stop, allowed } = useStop(conv.machineId, agent);
+  const { stop } = useStop(conv.machineId, agent);
+  const parent = useMachines((s) => (agent?.parent_id ? s.machines[conv.machineId]?.snapshot?.agents.find((a) => a.id === agent.parent_id) : undefined));
+  const select = useUi((s) => s.select);
 
   // ⌘. (Ctrl+. elsewhere) interrupts the agent on screen.
   useEffect(() => {
@@ -273,30 +296,26 @@ function Header({ conv }: { conv: Conversation }) {
           <AgentIcon kind={conv.kind} size={15} />
         </span>
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-1.5">
+            {parent && (
+              <>
+                <button
+                  onClick={() => select(liveKey(conv.machineId, parent.id))}
+                  className="min-w-0 max-w-[40%] shrink truncate text-[14.5px] text-muted hover:text-text"
+                  title="Open the agent that started this one"
+                >
+                  {agentTitle(parent)}
+                </button>
+                <ChevronRight size={13} className="shrink-0 text-faint" />
+              </>
+            )}
             <h1 className="truncate text-[14.5px] font-semibold">{conv.title}</h1>
-            <span className={stale ? "opacity-40 grayscale" : ""}>
-              <StatusDot attention={conv.attention} />
-            </span>
           </div>
           <div className="truncate text-[11.5px] text-faint">{subtitle}</div>
         </div>
       </div>
       <div className="no-drag flex shrink-0 items-center gap-2">
         {stale ? <Badge>Offline</Badge> : <Badge tone={attentionTone(conv.attention)}>{statusLabel(conv.attention)}</Badge>}
-        {agent && allowed && (
-          <Button
-            size="md"
-            variant="secondary"
-            icon={<Square size={13} />}
-            disabled={!canStop}
-            loading={stopping}
-            onClick={() => void stop()}
-            title={agent.attention.status === "blocked" ? "The agent is waiting for an answer: approve or deny it" : `Stop the agent (${MOD}.)`}
-          >
-            Stop
-          </Button>
-        )}
         <Menu
           trigger={
             <button className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-border text-muted hover:bg-surface-high hover:text-text" aria-label="More actions">
