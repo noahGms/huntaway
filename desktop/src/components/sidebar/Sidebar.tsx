@@ -1,10 +1,13 @@
-import { Archive, Check, ChevronDown, ChevronRight, Clock, Eye, FolderGit2, Layers, Monitor, Plus, Puzzle, Search, Server, Settings, SlidersHorizontal, Star, ArrowUpRight, Boxes } from "lucide-react";
+import { openPath } from "@tauri-apps/plugin-opener";
+import { Archive, ArchiveRestore, Check, ChevronDown, ChevronRight, Clock, Copy, Eye, FolderGit2, FolderOpen, History, Layers, Monitor, Plus, Puzzle, Search, Server, Settings, SlidersHorizontal, Square, SquareTerminal, Star, ArrowUpRight, Boxes } from "lucide-react";
 import { memo, useEffect, useMemo, useRef } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import { errorMessage } from "../../api/client";
 import type { MachineView } from "../../api/types";
 import { useConversations } from "../../hooks/useConversations";
+import { useStop } from "../../hooks/useStop";
 import { isMac } from "../../lib/platform";
-import { buildSidebarRows, compactAge, longDate, projectKey, statusLabel, treeCollapsedId, treeExpandedId, type Conversation, type ConvTree, type SidebarRow } from "../../lib/conversations";
+import { archiveId, buildSidebarRows, compactAge, historyKey, longDate, projectKey, statusLabel, treeCollapsedId, treeExpandedId, type Conversation, type ConvTree, type SidebarRow } from "../../lib/conversations";
 import { MOD } from "../../lib/keys";
 import { orderMachines, spaceLabel, spaceMachineIds, type Space } from "../../lib/spaces";
 import { machineList, useMachines } from "../../store/machines";
@@ -13,7 +16,7 @@ import { useSettings } from "../../store/settings";
 import { useUi, type View } from "../../store/ui";
 import { IconButton, Kbd } from "../ui/Button";
 import { Logo } from "../ui/Logo";
-import { Menu, MenuItem, MenuSeparator } from "../ui/Menu";
+import { ContextMenu, Menu, MenuItem, MenuSeparator } from "../ui/Menu";
 import { MachineDot, StatusDot, agentLabel } from "../ui/Status";
 import { UpdateBanner } from "./UpdateBanner";
 
@@ -44,8 +47,11 @@ export function Sidebar() {
 
   const filtered = useMemo(() => {
     const set = new Set(idsKey.split(","));
-    return conversations.filter((c) => set.has(c.machineId) && (prefs.showArchived || c.live));
-  }, [conversations, idsKey, prefs.showArchived]);
+    const archived = new Set(prefs.archived);
+    // An archived agent that needs an answer still shows.
+    const hidden = (c: (typeof conversations)[number]) => !prefs.showArchived && archived.has(archiveId(c)) && c.attention?.status !== "blocked";
+    return conversations.filter((c) => set.has(c.machineId) && (prefs.showPast || c.live) && !hidden(c));
+  }, [conversations, idsKey, prefs.showPast, prefs.showArchived, prefs.archived]);
   const collapsed = useMemo(() => new Set(prefs.collapsed), [prefs.collapsed]);
   const favorites = useMemo(() => new Set(prefs.favorites), [prefs.favorites]);
   const rows = useMemo(
@@ -270,6 +276,7 @@ const ConversationRow = memo(function ConversationRow({
   const own = tree && !tree.expanded ? tree.rollup : conv.attention;
   const attention = offline && conv.live ? null : own;
   const blocked = attention?.status === "blocked";
+  const archived = usePrefs((s) => s.archived.includes(archiveId(conv)));
   const toggleTree = () => {
     if (!tree) return;
     const { collapsed, toggleCollapsed } = usePrefs.getState();
@@ -280,43 +287,103 @@ const ConversationRow = memo(function ConversationRow({
     toggleCollapsed(tree.expanded ? c : x);
   };
   return (
-    <div className="px-1.5">
-      <div
-        className={`flex h-7 w-full items-center rounded-md pr-2 transition-colors ${active ? "bg-surface-high" : "hover:bg-surface-high/50"}`}
-        style={indent(depth + (depth ? 0.6 : 0))}
-      >
-        {tree ? (
-          <button
-            onClick={toggleTree}
-            className="flex h-7 w-4 shrink-0 items-center justify-center text-faint hover:text-text"
-            aria-expanded={tree.expanded}
-            aria-label={tree.expanded ? "Hide the agents it started" : "Show the agents it started"}
-            title={`${tree.total} agent${tree.total > 1 ? "s" : ""} started by this one`}
-          >
-            {tree.expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          </button>
-        ) : (
-          depth > 0 && <span className="w-1 shrink-0" />
-        )}
-        <button
-          onClick={() => useUi.getState().select(conv.key)}
-          className="flex h-7 min-w-0 flex-1 items-center gap-2 text-left"
-          title={`${conv.title}\n${conv.project} · ${conv.machineName}\n${agentLabel(conv.kind)} · ${offline && conv.live ? "Machine offline" : statusLabel(conv.attention)}${conv.lastActivity ? ` · ${longDate(conv.lastActivity)}` : ""}`}
+    <ContextMenu content={<ConversationMenu conv={conv} archived={archived} />}>
+      <div className={`px-1.5 ${archived ? "opacity-60" : ""}`}>
+        <div
+          className={`flex h-7 w-full items-center rounded-md pr-2 transition-colors [[data-state=open]>&]:bg-surface-high/50 ${active ? "bg-surface-high" : "hover:bg-surface-high/50"}`}
+          style={indent(depth + (depth ? 0.6 : 0))}
         >
-          <span className="flex w-3 shrink-0 justify-center">
-            <StatusDot attention={attention} size={7} />
-          </span>
-          <span className={`min-w-0 flex-1 truncate text-[13px] leading-5 ${conv.live ? (active ? "text-text" : "text-[#d9d5ce]") : "text-muted"}`}>{conv.title}</span>
-          {suffix && <span className="min-w-0 max-w-[40%] shrink truncate text-[11px] text-faint">{suffix}</span>}
-          {tree && !tree.expanded && (
-            <span className={`shrink-0 rounded px-1 text-[10.5px] leading-4 tabular-nums ${blocked ? "bg-blocked font-semibold text-ink" : "bg-surface-high text-muted"}`}>{tree.total}</span>
+          {tree ? (
+            <button
+              onClick={toggleTree}
+              className="flex h-7 w-4 shrink-0 items-center justify-center text-faint hover:text-text"
+              aria-expanded={tree.expanded}
+              aria-label={tree.expanded ? "Hide the agents it started" : "Show the agents it started"}
+              title={`${tree.total} agent${tree.total > 1 ? "s" : ""} started by this one`}
+            >
+              {tree.expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </button>
+          ) : (
+            depth > 0 && <span className="w-1 shrink-0" />
           )}
-          <span className={`w-8 shrink-0 text-right text-[11px] tabular-nums ${blocked ? "text-blocked" : "text-faint"}`}>{compactAge(conv.lastActivity)}</span>
-        </button>
+          <button
+            onClick={() => useUi.getState().select(conv.key)}
+            className="flex h-7 min-w-0 flex-1 items-center gap-2 text-left"
+            title={`${conv.title}\n${conv.project} · ${conv.machineName}\n${agentLabel(conv.kind)} · ${offline && conv.live ? "Machine offline" : statusLabel(conv.attention)}${conv.lastActivity ? ` · ${longDate(conv.lastActivity)}` : ""}`}
+          >
+            <span className="flex w-3 shrink-0 justify-center">
+              <StatusDot attention={attention} size={7} />
+            </span>
+            <span className={`min-w-0 flex-1 truncate text-[13px] leading-5 ${conv.live ? (active ? "text-text" : "text-[#d9d5ce]") : "text-muted"}`}>{conv.title}</span>
+            {suffix && <span className="min-w-0 max-w-[40%] shrink truncate text-[11px] text-faint">{suffix}</span>}
+            {tree && !tree.expanded && (
+              <span className={`shrink-0 rounded px-1 text-[10.5px] leading-4 tabular-nums ${blocked ? "bg-blocked font-semibold text-ink" : "bg-surface-high text-muted"}`}>{tree.total}</span>
+            )}
+            <span className={`w-8 shrink-0 text-right text-[11px] tabular-nums ${blocked ? "text-blocked" : "text-faint"}`}>{compactAge(conv.lastActivity)}</span>
+          </button>
+        </div>
       </div>
-    </div>
+    </ContextMenu>
   );
 });
+
+/** Right click on a conversation. Rendered only while open. */
+function ConversationMenu({ conv, archived }: { conv: Conversation; archived: boolean }) {
+  const { select, setPanelTab, toast } = useUi();
+  const setArchived = usePrefs((s) => s.setArchived);
+  const agent = conv.agent;
+  const { canStop, stop } = useStop(conv.machineId, agent);
+  return (
+    <>
+      {agent && (
+        <MenuItem
+          icon={<SquareTerminal size={14} />}
+          onSelect={() => {
+            select(conv.key);
+            setPanelTab("terminal");
+          }}
+        >
+          Open terminal
+        </MenuItem>
+      )}
+      {agent && canStop && (
+        <MenuItem icon={<Square size={14} />} onSelect={() => void stop()}>
+          Stop
+        </MenuItem>
+      )}
+      {agent?.native_session && (
+        <MenuItem icon={<History size={14} />} onSelect={() => select(historyKey(conv.machineId, `${agent.kind}:${agent.native_session}`))}>
+          Show in history
+        </MenuItem>
+      )}
+      {conv.local && conv.cwd && (
+        <MenuItem icon={<FolderOpen size={14} />} onSelect={() => void openPath(conv.cwd!).catch((e) => toast(errorMessage(e), "error"))}>
+          Open project folder
+        </MenuItem>
+      )}
+      <MenuItem
+        icon={<Copy size={14} />}
+        onSelect={() => {
+          const session = agent?.native_session ?? conv.history?.session_id;
+          void navigator.clipboard.writeText(session ? `${conv.kind} --resume ${session}` : (conv.agentId ?? conv.historyId ?? ""));
+          toast("Copied");
+        }}
+      >
+        {agent?.native_session || conv.history ? "Copy resume command" : "Copy ID"}
+      </MenuItem>
+      <MenuSeparator />
+      <MenuItem
+        icon={archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+        onSelect={() => {
+          setArchived(archiveId(conv), !archived);
+          if (!archived) toast("Archived. Display options → Show archived to see it again.");
+        }}
+      >
+        {archived ? "Unarchive" : "Archive"}
+      </MenuItem>
+    </>
+  );
+}
 
 function SpaceMenu({ machines, waiting }: { machines: MachineView[]; waiting: number }) {
   const { space, groups, setSpace } = usePrefs();
@@ -367,7 +434,7 @@ function SpaceMenu({ machines, waiting }: { machines: MachineView[]; waiting: nu
 function DisplayMenu() {
   const grouping = useSettings((s) => s.settings.grouping);
   const updateSettings = useSettings((s) => s.update);
-  const { showArchived, setShowArchived, showInactive, setShowInactive, inactiveDays } = usePrefs();
+  const { showPast, setShowPast, showArchived, setShowArchived, archived, showInactive, setShowInactive, inactiveDays } = usePrefs();
   const tick = (on: boolean) => (on ? <Check size={13} className="ml-auto text-muted" /> : null);
   return (
     <Menu
@@ -384,9 +451,14 @@ function DisplayMenu() {
         Group by date {tick(grouping === "date")}
       </MenuItem>
       <MenuSeparator />
-      <MenuItem icon={<Archive size={14} />} onSelect={() => setShowArchived(!showArchived)}>
-        Show archived {tick(showArchived)}
+      <MenuItem icon={<History size={14} />} onSelect={() => setShowPast(!showPast)}>
+        Show past conversations {tick(showPast)}
       </MenuItem>
+      {archived.length > 0 && (
+        <MenuItem icon={<Archive size={14} />} onSelect={() => setShowArchived(!showArchived)}>
+          Show archived {tick(showArchived)}
+        </MenuItem>
+      )}
       {inactiveDays > 0 && (
         <MenuItem icon={<Eye size={14} />} onSelect={() => setShowInactive(!showInactive)}>
           Show inactive projects {tick(showInactive)}

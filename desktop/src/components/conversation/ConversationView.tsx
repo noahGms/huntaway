@@ -1,14 +1,15 @@
 import { openPath } from "@tauri-apps/plugin-opener";
-import { ArrowDown, ChevronRight, Copy, FolderOpen, History, MoreHorizontal, PanelRight, Play, RefreshCw, SquareTerminal } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, ChevronRight, Copy, FolderOpen, History, MoreHorizontal, PanelRight, Play, RefreshCw, SquareTerminal } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { api, app, errorMessage } from "../../api/client";
 import type { AgentView, MachineView, QueuedMessage } from "../../api/types";
 import { useStop } from "../../hooks/useStop";
-import { agentTitle, historyKey, liveKey, statusLabel, type Conversation } from "../../lib/conversations";
+import { agentTitle, archiveId, historyKey, liveKey, statusLabel, type Conversation } from "../../lib/conversations";
 import { ALT, MOD } from "../../lib/keys";
 import { modPressed, overlayOpen } from "../../lib/platform";
 import { can, touchTimeline, useMachines } from "../../store/machines";
+import { usePrefs } from "../../store/prefs";
 import { useUi } from "../../store/ui";
 import { Button, IconButton, Kbd, Spinner } from "../ui/Button";
 import { Menu, MenuItem, MenuSeparator } from "../ui/Menu";
@@ -293,6 +294,8 @@ function Header({ conv }: { conv: Conversation }) {
   const { stop } = useStop(conv.machineId, agent);
   const parent = useMachines((s) => (agent?.parent_id ? s.machines[conv.machineId]?.snapshot?.agents.find((a) => a.id === agent.parent_id) : undefined));
   const select = useUi((s) => s.select);
+  const archived = usePrefs((s) => s.archived.includes(archiveId(conv)));
+  const setArchived = usePrefs((s) => s.setArchived);
 
   // ⌘. (Ctrl+. elsewhere) interrupts the agent on screen.
   useEffect(() => {
@@ -369,6 +372,9 @@ function Header({ conv }: { conv: Conversation }) {
             }}
           >
             {agent?.native_session ? "Copy resume command" : "Copy ID"}
+          </MenuItem>
+          <MenuItem icon={archived ? <ArchiveRestore size={14} /> : <Archive size={14} />} onSelect={() => setArchived(archiveId(conv), !archived)}>
+            {archived ? "Unarchive" : "Archive"}
           </MenuItem>
           <MenuSeparator />
           <MenuItem icon={<PanelRight size={14} />} onSelect={togglePanel}>

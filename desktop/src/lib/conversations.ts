@@ -110,6 +110,13 @@ export function compareConversations(a: Conversation, b: Conversation): number {
 
 export const projectKey = (machineId: string, project: string) => `${machineId}|${project}`;
 
+/** Identifies a conversation for archiving: the agent's session, so it stays
+ * archived once the agent stops and it moves to the history. */
+export function archiveId(c: Conversation): string {
+  const session = c.agent?.native_session ?? c.history?.session_id;
+  return session ? `${c.machineId}|${c.kind}:${session}` : c.key;
+}
+
 export interface Group {
   id: string;
   label: string;
