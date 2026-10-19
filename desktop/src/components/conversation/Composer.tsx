@@ -75,7 +75,7 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
   const canReadFiles = can(machine, "files.read");
   const disabledReason = !allowed ? (blocked ? "This device can't answer prompts" : "This device can't send messages") : !online ? "Machine offline" : null;
   const idle = agent.attention.status === "idle" || agent.attention.status === "done";
-  const waitingQueue = agent.queued.filter((q) => q.state === "waiting");
+  const waitingQueue = (agent.queued ?? []).filter((q) => q.state === "waiting");
   // Sent now, the message would interrupt the agent's turn: it waits in the queue.
   const queues = !blocked && (agent.attention.status === "working" || waitingQueue.length > 0);
   const slash =
