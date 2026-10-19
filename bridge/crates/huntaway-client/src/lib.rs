@@ -147,6 +147,14 @@ impl Client {
         self.send(Method::POST, path, Some(Body::Json(body))).await
     }
 
+    pub async fn put(&self, path: &str, body: Value) -> Result<Value> {
+        self.send(Method::PUT, path, Some(Body::Json(body))).await
+    }
+
+    pub async fn delete(&self, path: &str) -> Result<Value> {
+        self.send(Method::DELETE, path, None).await
+    }
+
     pub async fn get_typed<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         serde_json::from_value(self.get(path).await?).map_err(|e| Error::Decode(e.to_string()))
     }

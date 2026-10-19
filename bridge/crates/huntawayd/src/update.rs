@@ -143,9 +143,17 @@ async fn install_inner(version: &str) -> Result<()> {
     // The new binary must run on this machine before it replaces the old one.
     let out = std::process::Command::new(&new).arg("--version").output();
     let reported = out.as_ref().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).to_string());
-    if reported.as_deref().is_none_or(|r| !r.contains(version)) {
-        let _ = std::fs::remove_file(&new);
-        bail!("the downloaded binary does not run on this machine");
+    match reported {
+        None => {
+            let _ = std::fs::remove_file(&new);
+            bail!("the downloaded binary does not run on this machine");
+        }
+        // Installing it would offer the same update again and again.
+        Some(r) if !r.contains(version) => {
+            let _ = std::fs::remove_file(&new);
+            bail!("the downloaded binary reports {}, not {version}", r.trim());
+        }
+        Some(_) => {}
     }
     std::fs::copy(&exe, old_path(&exe)).context("cannot keep the previous binary")?;
     std::fs::rename(&new, &exe).context("cannot replace the binary")?;
@@ -214,7 +222,10 @@ pub async fn cli(check_only: bool) -> Result<()> {
     println!("→ updating huntawayd {} → {}", c.current, c.latest);
     install(&c.latest).await?;
     println!("✓ huntawayd {} installed", c.latest);
-    if crate::service::unit_path().exists() {
+    // Only the service that runs this very binary.
+    let exe = exe_path()?.display().to_string();
+    let ours = std::fs::read_to_string(crate::service::unit_path()).is_ok_and(|unit| unit.contains(&exe));
+    if ours {
         crate::service::restart()?;
         println!("✓ service restarted");
     } else {

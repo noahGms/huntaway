@@ -26,6 +26,9 @@ jobs:
           targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
       - uses: mlugg/setup-zig@v2
       - run: cargo install cargo-zigbuild --locked
+      # The daemon reports its crate version (update checks compare it to the tag).
+      - name: Version from the tag
+        run: V="${GITHUB_REF_NAME#v}" perl -0pi -e 's/^version = .*$/version = "$ENV{V}"/m' bridge/Cargo.toml && grep -m1 '^version' bridge/Cargo.toml
       - working-directory: bridge
         run: |
           cargo zigbuild --release -p huntawayd --target x86_64-unknown-linux-musl
@@ -42,6 +45,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # The daemon reports its crate version (update checks compare it to the tag).
+      - name: Version from the tag
+        run: V="${GITHUB_REF_NAME#v}" perl -0pi -e 's/^version = .*$/version = "$ENV{V}"/m' bridge/Cargo.toml && grep -m1 '^version' bridge/Cargo.toml
       - working-directory: bridge
         run: cargo build --release -p huntawayd
       - run: mkdir -p out && cp bridge/target/release/huntawayd out/huntawayd-macos-arm64

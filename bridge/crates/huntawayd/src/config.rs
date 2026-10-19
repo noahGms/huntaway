@@ -26,6 +26,9 @@ pub struct Config {
     /// `huntawayd dispatch`: agent kind per role (`review = "codex"`), with
     /// an optional `default`.
     pub routing: std::collections::BTreeMap<String, String>,
+    /// Skill folders the synced skills are linked into, per agent
+    /// (default: `claude = "~/.claude/skills"`, `codex = "~/.agents/skills"`).
+    pub skill_dirs: std::collections::BTreeMap<String, PathBuf>,
 }
 
 impl Default for Config {
@@ -38,6 +41,7 @@ impl Default for Config {
             items_per_agent: 1000,
             journal_size: 20_000,
             routing: Default::default(),
+            skill_dirs: Default::default(),
         }
     }
 }

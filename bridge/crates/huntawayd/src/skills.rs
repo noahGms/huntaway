@@ -83,8 +83,14 @@ fn read_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
 }
 
 impl Skills {
-    pub fn new() -> Self {
-        Self::with(state_dir().join("skills"), default_targets())
+    /// Store in the state dir, linked into `config.skill_dirs` (or the defaults).
+    pub fn new(config: &crate::config::Config) -> Self {
+        let targets = if config.skill_dirs.is_empty() {
+            default_targets()
+        } else {
+            config.skill_dirs.iter().map(|(agent, dir)| (agent.clone(), dir.clone())).collect()
+        };
+        Self::with(state_dir().join("skills"), targets)
     }
 
     pub fn with(root: PathBuf, targets: Vec<(String, PathBuf)>) -> Self {

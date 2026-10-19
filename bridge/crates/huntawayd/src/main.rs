@@ -156,6 +156,7 @@ async fn run() -> Result<()> {
     let dir = state_dir();
     let identity = Identity::load_or_create(&dir)?;
     let listen_config = config.clone();
+    let skills = Arc::new(skills::Skills::new(&config));
     let (engine, notifications) = engine::Engine::new(config, identity.machine_id.clone());
     engine.start();
     let presence = Arc::new(presence::Presence::default());
@@ -170,7 +171,7 @@ async fn run() -> Result<()> {
         warn!(error = %e, "local token not created: the desktop app will need pairing");
     }
     let listeners = Arc::new(listen::Listeners::default());
-    let state = Arc::new(api::AppState { engine, store, identity, history: Default::default(), presence, listeners: listeners.clone(), runner, skills: Arc::new(skills::Skills::new()) });
+    let state = Arc::new(api::AppState { engine, store, identity, history: Default::default(), presence, listeners: listeners.clone(), runner, skills });
     let app = api::router(state).into_make_service_with_connect_info::<SocketAddr>();
     listen::run(listeners, listen_config, app).await
 }

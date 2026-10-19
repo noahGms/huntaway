@@ -1586,6 +1586,7 @@ fn relink(agents: &mut BTreeMap<String, AgentEntry>, dispatched: &HashMap<String
         for (at, launch) in &parent.launches {
             let child = agents.iter().find(|(cid, c)| {
                 *cid != pid
+                    && c.view.kind != "shell"
                     && c.view.session == parent.view.session
                     && (launch.pane_id.as_deref() == Some(c.view.pane_id.as_str())
                         || (launch.name.is_some() && launch.name == c.view.name)
