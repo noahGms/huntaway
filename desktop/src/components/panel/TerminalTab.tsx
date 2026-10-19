@@ -138,7 +138,9 @@ function ShellTerminal({ conv, switcher }: { conv: Conversation; switcher: React
     : !online
       ? "The machine is offline."
       : !can(machine, "terminal.open")
-        ? "This device can't open shells on this machine."
+        ? conv.local
+          ? "This huntawayd is too old to open shells: update it."
+          : "Can't open shells here: huntawayd is out of date, or this device was paired without terminal access."
         : !autoOpened.current || starting
           ? "Opening a shell in the project folder…"
           : null;
