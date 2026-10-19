@@ -149,6 +149,7 @@ impl OnScreen {
         }
     }
 
+    #[cfg(test)]
     pub fn take(&mut self, key: &str) -> Option<ShownId> {
         self.shown.remove(key)
     }
@@ -181,14 +182,6 @@ fn close_linux(shown: ShownId) {
 pub fn dismiss_stale(_: &AppHandle, machine_id: &str, agent_id: &str, current: Option<&str>) {
     let stale = on_screen().lock().unwrap().take_stale(&format!("{machine_id}/{agent_id}"), current);
     if let Some(shown) = stale {
-        close_linux(shown);
-    }
-}
-
-#[cfg(target_os = "linux")]
-pub fn dismiss(_: &AppHandle, machine_id: &str, agent_id: &str) {
-    let shown = on_screen().lock().unwrap().take(&format!("{machine_id}/{agent_id}"));
-    if let Some(shown) = shown {
         close_linux(shown);
     }
 }
