@@ -168,6 +168,11 @@ impl Parser {
                 vec![TimelineItem::Notice { timestamp, text: "Conversation compacted".into() }]
             }
             Some("user") if !is_meta => self.parse_user(&entry, uuid, timestamp),
+            // A message typed while Claude works, read mid-turn: written as an
+            // attachment, with no `user` entry.
+            Some("attachment") if is_queued_prompt(&entry["attachment"]) => {
+                user_text(entry["attachment"]["prompt"].as_str().unwrap_or_default(), uuid, timestamp).into_iter().collect()
+            }
             Some("assistant") => {
                 self.record_usage(&entry["message"], sidechain);
                 self.parse_assistant(&entry, uuid, timestamp, sidechain)
@@ -337,6 +342,14 @@ fn parse_system(entry: &Value, timestamp: String) -> Vec<TimelineItem> {
 
 /// Converts a plain user message. Slash commands are shown as `/name args`;
 /// command output and injected reminders are hidden.
+/// `queued_command` attachment typed by a human (not a task notification).
+fn is_queued_prompt(a: &Value) -> bool {
+    a["type"] == "queued_command"
+        && a["commandMode"] != "task-notification"
+        && (a["origin"]["kind"] == "human" || a["humanTurn"].as_bool() == Some(true))
+        && a["prompt"].is_string()
+}
+
 fn user_text(text: &str, uuid: String, timestamp: String) -> Option<TimelineItem> {
     let text = text.trim();
     // Text injected by Claude Code itself (background task results, shell
@@ -548,6 +561,23 @@ mod tests {
         assert_eq!(usage.context_window, Some(200_000));
         assert!(usage.cost_usd.unwrap() > 0.0);
         assert_eq!(tail.title(), Some("fix-login"));
+    }
+
+    #[test]
+    fn messages_typed_while_working_are_user_messages() {
+        let (_, items) = tail_with(&[
+            r#"{"type":"queue-operation","operation":"enqueue","timestamp":"t0","content":"also run the tests"}"#,
+            r#"{"type":"attachment","uuid":"q1","timestamp":"t1","attachment":{"type":"queued_command","prompt":"also run the tests","commandMode":"prompt","origin":{"kind":"human"},"humanTurn":true}}"#,
+            r#"{"type":"attachment","uuid":"q2","timestamp":"t2","attachment":{"type":"queued_command","prompt":"<task-notification>done</task-notification>","commandMode":"task-notification"}}"#,
+        ]);
+        let users: Vec<&str> = items
+            .iter()
+            .filter_map(|i| match i {
+                TimelineItem::UserMessage { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(users, ["also run the tests"]);
     }
 
     #[test]
