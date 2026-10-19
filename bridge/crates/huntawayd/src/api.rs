@@ -44,6 +44,8 @@ pub fn router(state: Shared) -> Router {
         .route("/v1/agents/{id}", get(agent))
         .route("/v1/agents/{id}/timeline", get(timeline))
         .route("/v1/agents/{id}/messages", post(send_message))
+        .route("/v1/agents/{id}/queue/{queued}/remove", post(remove_queued))
+        .route("/v1/agents/{id}/queue/{queued}/send", post(send_queued_now))
         .route("/v1/agents/{id}/interrupt", post(interrupt))
         .route("/v1/agents/{id}/choice", post(choice))
         .route("/v1/agents/{id}/deny", post(deny))
@@ -260,11 +262,27 @@ async fn screen(State(state): State<Shared>, auth: Auth, Path(id): Path<String>,
 #[derive(Deserialize)]
 struct MessageBody {
     text: String,
+    /// Type it even while the agent works, instead of queuing it.
+    #[serde(default)]
+    now: bool,
 }
 
 async fn send_message(State(state): State<Shared>, auth: Auth, Path(id): Path<String>, Json(body): Json<MessageBody>) -> ApiResult<Json<Value>> {
     auth.require("agents.message")?;
-    state.engine.send_message(&id, &body.text).await?;
+    let queued = state.engine.send_message(&id, &body.text, body.now).await?;
+    Ok(Json(json!({ "ok": true, "queued": queued })))
+}
+
+/// Removes a waiting message; returns its text (to edit it).
+async fn remove_queued(State(state): State<Shared>, auth: Auth, Path((id, queued)): Path<(String, String)>) -> ApiResult<Json<Value>> {
+    auth.require("agents.message")?;
+    let text = state.engine.remove_queued(&id, &queued)?;
+    Ok(Json(json!({ "ok": true, "text": text })))
+}
+
+async fn send_queued_now(State(state): State<Shared>, auth: Auth, Path((id, queued)): Path<(String, String)>) -> ApiResult<Json<Value>> {
+    auth.require("agents.message")?;
+    state.engine.send_queued_now(&id, &queued).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

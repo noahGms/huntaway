@@ -44,7 +44,8 @@ export function ConversationView({ conv }: { conv: Conversation }) {
   const rows = useMemo(() => buildTurns(items, working), [items, working]);
   const retry = () => void loadTimeline(conv.key);
   const showApproval = !!agent?.interaction && agent.attention.status === "blocked";
-  const queued = agent?.queued ?? [];
+  // Waiting ones show above the composer; sent ones until the transcript has them.
+  const queued = useMemo(() => (agent?.queued ?? []).filter((q) => q.state !== "waiting"), [agent?.queued]);
   // Latest plan, pinned while it has unfinished tasks.
   const plan = useMemo(() => {
     for (let i = items.length - 1; i >= 0; i--) {

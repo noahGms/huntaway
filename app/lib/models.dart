@@ -284,13 +284,20 @@ class Agent {
 
 /// Message sent from Huntaway, not in the transcript yet.
 class QueuedMessage {
-  QueuedMessage(this.text, this.at);
+  QueuedMessage(this.text, this.at, {this.id = '', this.waiting = false});
+  final String id;
   final String text;
   final DateTime at;
+
+  /// Held by the bridge until the agent finishes its turn (can be removed
+  /// or sent now). Otherwise typed into the agent, not in its transcript yet.
+  final bool waiting;
 
   factory QueuedMessage.fromJson(Map<String, dynamic> j) => QueuedMessage(
         j['text'] as String? ?? '',
         DateTime.fromMillisecondsSinceEpoch(((j['at'] as num?) ?? 0).toInt() * 1000),
+        id: j['id'] as String? ?? '',
+        waiting: j['state'] == 'waiting',
       );
 }
 

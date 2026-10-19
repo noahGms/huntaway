@@ -137,6 +137,38 @@ class _AgentScreenState extends State<AgentScreen> {
     });
   }
 
+  /// Send now, edit or remove a message waiting in the queue.
+  Future<void> _queuedActions(MachineConnection c, Agent agent, QueuedMessage q) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const Icon(Icons.keyboard_return_rounded),
+            title: const Text('Send now'),
+            subtitle: const Text("Don't wait for the agent to finish"),
+            onTap: () => Navigator.pop(context, 'send'),
+          ),
+          ListTile(leading: const Icon(Icons.edit_outlined), title: const Text('Edit'), onTap: () => Navigator.pop(context, 'edit')),
+          ListTile(leading: const Icon(Icons.delete_outline), title: const Text('Remove from the queue'), onTap: () => Navigator.pop(context, 'remove')),
+        ]),
+      ),
+    );
+    if (action == null) return;
+    await _run(() async {
+      switch (action) {
+        case 'send':
+          await c.client.sendQueuedNow(agent.id, q.id);
+        case 'edit':
+          final text = await c.client.removeQueued(agent.id, q.id);
+          final current = _input.text;
+          _input.text = current.isEmpty ? text : '$text\n$current';
+        case 'remove':
+          await c.client.removeQueued(agent.id, q.id);
+      }
+    });
+  }
+
   /// Esc. While the agent waits on a prompt, Esc denies it: the bridge
   /// refuses unless the user confirms.
   Future<void> _interrupt(MachineConnection c, Agent agent) async {
@@ -282,7 +314,11 @@ class _AgentScreenState extends State<AgentScreen> {
                         if (i < queued.length) {
                           return Padding(
                             padding: const EdgeInsets.symmetric(vertical: 5),
-                            child: QueuedBubble(queued[i], waiting: working),
+                            child: QueuedBubble(
+                              queued[i],
+                              working: working,
+                              onTap: queued[i].waiting && canWrite ? () => _queuedActions(c, agent, queued[i]) : null,
+                            ),
                           );
                         }
                         i -= queued.length;

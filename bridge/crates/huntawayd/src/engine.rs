@@ -56,6 +56,9 @@ const LAUNCHES_KEPT: usize = 64;
 /// A message sent from Huntaway that never shows up in the transcript is
 /// dropped from `queued` after this long.
 const QUEUED_MAX_AGE_SECS: u64 = 15 * 60;
+/// After a queued message is typed, the agent takes a moment to report
+/// `working`: the next one waits at least this long.
+const QUEUE_GAP: Duration = Duration::from_secs(3);
 
 fn is_busy(status: &str) -> bool {
     matches!(status, "working" | "blocked")
@@ -230,6 +233,8 @@ struct AgentEntry {
     block_seq: u64,
     /// Herdr agents this agent started or prompted, with the call timestamp.
     launches: Vec<(String, AgentLaunch)>,
+    /// Last time a queued message was typed into the agent.
+    delivered_at: Option<Instant>,
     /// First message of the conversation (matches a parent's prompt).
     first_request: Option<String>,
 }
@@ -756,6 +761,7 @@ impl Engine {
             last_request: None,
             block_seq: 0,
             launches: Vec::new(),
+            delivered_at: None,
             first_request: None,
         };
         // Load history without notifications.
@@ -826,7 +832,10 @@ impl Engine {
             interval.tick().await;
             // Transcript reads are blocking file IO.
             let engine = self.clone();
-            let Ok((screens, lookups)) = tokio::task::spawn_blocking(move || engine.tick()).await else { continue };
+            let Ok((screens, lookups, deliveries)) = tokio::task::spawn_blocking(move || engine.tick()).await else { continue };
+            for d in deliveries {
+                self.deliver(d).await;
+            }
             for (id, client, pane) in lookups {
                 let Ok(info) = client.agent_get(&pane).await else { continue };
                 if info.agent_session.is_none() {
@@ -875,10 +884,11 @@ impl Engine {
     }
 
     /// Applies settled statuses, reads new transcript lines, recomputes views
-    /// and raises notifications. Returns the agents whose screen must be read
-    /// and those whose native session must be looked up.
+    /// and raises notifications. Returns the agents whose screen must be read,
+    /// those whose native session must be looked up and the queued messages
+    /// to type now.
     #[allow(clippy::type_complexity)]
-    fn tick(&self) -> (Vec<(String, Client, String)>, Vec<(String, Client, String)>) {
+    fn tick(&self) -> (Vec<(String, Client, String)>, Vec<(String, Client, String)>, Vec<Delivery>) {
         // Read the transcripts without holding the state lock: API requests
         // must not wait for file IO.
         let jobs: Vec<(String, SharedTails, bool)> = {
@@ -902,6 +912,7 @@ impl Engine {
         let mut notifications = Vec::new();
         let mut screens = Vec::new();
         let mut lookups = Vec::new();
+        let mut deliveries = Vec::new();
         let now_secs = now_ms() / 1000;
         {
             let mut state = self.state.lock().unwrap();
@@ -930,7 +941,18 @@ impl Engine {
                     }
                 }
                 recompute(entry);
-                entry.view.queued.retain(|q| now_secs.saturating_sub(q.at) < QUEUED_MAX_AGE_SECS);
+                // Waiting messages stay until sent or removed.
+                entry.view.queued.retain(|q| q.state == "waiting" || now_secs.saturating_sub(q.at) < QUEUED_MAX_AGE_SECS);
+                // The agent is free: type the next waiting message.
+                let free = matches!(entry.status.as_str(), "idle" | "done") && entry.raw_status == entry.status && !matches!(entry.view.attention, Attention::Blocked(_));
+                if free && entry.delivered_at.is_none_or(|t| t.elapsed() >= QUEUE_GAP) {
+                    if let Some(q) = entry.view.queued.iter_mut().find(|q| q.state == "waiting") {
+                        q.state = "sent".into();
+                        q.at = now_secs;
+                        entry.delivered_at = Some(Instant::now());
+                        deliveries.push(Delivery { agent: id.clone(), client: entry.client.clone(), pane: entry.view.pane_id.clone(), kind: entry.view.kind.clone(), queued: q.id.clone(), text: q.text.clone() });
+                    }
+                }
 
                 // Notifications. A turn ending on a question is notified as
                 // a finished turn, not as a prompt on screen.
@@ -1007,7 +1029,7 @@ impl Engine {
             self.emit("notification", Some(&n.agent_id), serde_json::to_value(&n).unwrap());
             let _ = self.notify_tx.send(n);
         }
-        (screens, lookups)
+        (screens, lookups, deliveries)
     }
 
     /// Links written by `huntawayd dispatch`, read again when the file changes.
@@ -1037,7 +1059,7 @@ impl Engine {
                         }
                     }
                     let shown = normalize(text);
-                    if let Some(i) = entry.view.queued.iter().position(|q| same_message(&normalize(&q.text), &shown)) {
+                    if let Some(i) = entry.view.queued.iter().position(|q| q.state == "sent" && same_message(&normalize(&q.text), &shown)) {
                         entry.view.queued.remove(i);
                     }
                 }
@@ -1076,32 +1098,108 @@ impl Engine {
         Ok(client.agent_get(pane).await?.agent_status.as_str().to_string())
     }
 
-    /// Sends a message. Refused while the agent waits on a prompt.
-    pub async fn send_message(&self, id: &str, text: &str) -> ActionResult<()> {
+    /// Sends a message. While the agent works (or other messages wait), it
+    /// is queued and typed once the agent is free, unless `now`: typed at
+    /// once (Claude queues it itself, Codex adds it to the running turn).
+    /// Refused while the agent waits on a prompt. Returns whether it was queued.
+    pub async fn send_message(&self, id: &str, text: &str, now: bool) -> ActionResult<bool> {
         let text = text.trim();
         if text.is_empty() {
             return Err(ActionError::new(400, "empty_message", "empty message"));
         }
         let (client, pane, kind) = self.target(id)?;
-        if self.fresh_status(&client, &pane).await? == "blocked" {
+        let status = self.fresh_status(&client, &pane).await?;
+        if status == "blocked" {
             return Err(ActionError::new(409, "agent_blocked", "the agent is waiting for an answer: use choice or deny"));
         }
-        if kind == "claude" {
-            // Claude puts an interrupted prompt back in its input box.
-            client.agent_send_keys(&pane, claude::CLEAR_INPUT_KEYS).await?;
+        let waiting = self.state.lock().unwrap().agents.get(id).is_some_and(|e| e.view.queued.iter().any(|q| q.state == "waiting"));
+        let queue = !now && (status == "working" || waiting);
+        if !queue {
+            type_message(&client, &pane, &kind, text).await?;
         }
-        client.agent_prompt(&pane, text).await?;
         let view = {
             let mut state = self.state.lock().unwrap();
-            state.agents.get_mut(id).filter(|e| e.tail.is_some()).map(|entry| {
-                entry.view.queued.push(QueuedMessage { text: text.to_string(), at: now_ms() / 1000 });
+            // A sent message is shown until the transcript has it; without a
+            // transcript, nothing would remove it.
+            state.agents.get_mut(id).filter(|e| queue || e.tail.is_some()).map(|entry| {
+                entry.view.queued.push(QueuedMessage {
+                    id: format!("q{:x}", rand::random::<u32>()),
+                    text: text.to_string(),
+                    at: now_ms() / 1000,
+                    state: if queue { "waiting" } else { "sent" }.into(),
+                });
+                if !queue {
+                    entry.delivered_at = Some(Instant::now());
+                }
                 entry.view.clone()
             })
         };
         if let Some(view) = view {
             self.emit("agent.updated", Some(id), serde_json::to_value(view).unwrap());
         }
+        Ok(queue)
+    }
+
+    /// Removes a message still waiting in the queue. Returns its text.
+    pub fn remove_queued(&self, id: &str, queued: &str) -> ActionResult<String> {
+        let (text, view) = {
+            let mut state = self.state.lock().unwrap();
+            let entry = state.agents.get_mut(id).ok_or_else(ActionError::not_found)?;
+            let i = entry
+                .view
+                .queued
+                .iter()
+                .position(|q| q.id == queued && q.state == "waiting")
+                .ok_or_else(|| ActionError::new(409, "already_sent", "the message was already sent"))?;
+            (entry.view.queued.remove(i).text, entry.view.clone())
+        };
+        self.emit("agent.updated", Some(id), serde_json::to_value(view).unwrap());
+        Ok(text)
+    }
+
+    /// Types a waiting message now, without waiting for the agent to be free.
+    pub async fn send_queued_now(&self, id: &str, queued: &str) -> ActionResult<()> {
+        let text = self.remove_queued(id, queued)?;
+        if let Err(e) = self.send_message(id, &text, true).await {
+            // Back in the queue rather than lost.
+            let view = {
+                let mut state = self.state.lock().unwrap();
+                state.agents.get_mut(id).map(|entry| {
+                    entry.view.queued.insert(0, QueuedMessage { id: queued.to_string(), text, at: now_ms() / 1000, state: "waiting".into() });
+                    entry.view.clone()
+                })
+            };
+            if let Some(view) = view {
+                self.emit("agent.updated", Some(id), serde_json::to_value(view).unwrap());
+            }
+            return Err(e);
+        }
         Ok(())
+    }
+
+    /// Types a queued message the tick found the agent free for.
+    async fn deliver(&self, d: Delivery) {
+        // The status may have changed since the tick: check it again.
+        let ready = matches!(self.fresh_status(&d.client, &d.pane).await.as_deref(), Ok("idle" | "done"));
+        let result = if ready { type_message(&d.client, &d.pane, &d.kind, &d.text).await.map_err(|e| e.to_string()) } else { Err("not free".into()) };
+        let view = {
+            let mut state = self.state.lock().unwrap();
+            let Some(entry) = state.agents.get_mut(&d.agent) else { return };
+            match &result {
+                Ok(()) if entry.tail.is_none() => entry.view.queued.retain(|q| q.id != d.queued),
+                Ok(()) => {}
+                Err(e) => {
+                    if ready {
+                        warn!(agent = %d.agent, error = %e, "cannot type a queued message");
+                    }
+                    if let Some(q) = entry.view.queued.iter_mut().find(|q| q.id == d.queued) {
+                        q.state = "waiting".into();
+                    }
+                }
+            }
+            entry.view.clone()
+        };
+        self.emit("agent.updated", Some(&d.agent), serde_json::to_value(view).unwrap());
     }
 
     /// Sends Esc. Refused while the agent waits on a prompt, where Esc would
@@ -1167,8 +1265,8 @@ impl Engine {
             warn!(agent = %id, "denied, but the agent is still blocked: reason not sent");
             return Ok(false);
         }
-        match self.send_message(id, text).await {
-            Ok(()) => Ok(true),
+        match self.send_message(id, text, true).await {
+            Ok(_) => Ok(true),
             Err(e) => {
                 warn!(agent = %id, error = %e.message, "denied, but the reason could not be sent");
                 Ok(false)
@@ -1439,6 +1537,26 @@ impl Engine {
 }
 
 /// Identifies the occupant of a pane: native session id, else kind.
+/// A queued message to type into an agent that became free.
+struct Delivery {
+    agent: String,
+    client: Client,
+    pane: String,
+    kind: String,
+    queued: String,
+    text: String,
+}
+
+/// Types `text` into the agent and submits it.
+async fn type_message(client: &Client, pane: &str, kind: &str, text: &str) -> herdr_client::Result<()> {
+    if kind == "claude" {
+        // Claude puts an interrupted prompt back in its input box.
+        client.agent_send_keys(pane, claude::CLEAR_INPUT_KEYS).await?;
+    }
+    client.agent_prompt(pane, text).await?;
+    Ok(())
+}
+
 fn instance_key(info: &AgentInfo) -> String {
     let base = info.agent_session.as_ref().map(|s| s.value.clone()).unwrap_or_else(|| info.agent.clone().unwrap_or_default());
     format!("{}:{}", info.terminal_id.as_deref().unwrap_or(""), base)
@@ -1844,6 +1962,31 @@ mod tests {
         engine.reconcile(&session(), &client, vec![with_session("s2")], None, &[]);
         assert_ne!(instance(&engine), before);
         assert!(instance(&engine).ends_with("s2"));
+    }
+
+    #[test]
+    fn waiting_messages_are_typed_once_the_agent_is_free() {
+        let engine = engine();
+        let client = Client::new("/nonexistent/herdr.sock");
+        let id = "default:w1:p1";
+        let queue = |engine: &Engine, text: &str| {
+            let mut state = engine.state.lock().unwrap();
+            let q = QueuedMessage { id: format!("q-{text}"), text: text.into(), at: now_ms() / 1000, state: "waiting".into() };
+            state.agents.get_mut(id).unwrap().view.queued.push(q);
+        };
+        engine.reconcile(&session(), &client, vec![agent_info("working")], None, &[]);
+        queue(&engine, "first");
+        queue(&engine, "second");
+        assert!(engine.tick().2.is_empty(), "nothing typed while the agent works");
+
+        engine.reconcile(&session(), &client, vec![agent_info("idle")], None, &[]);
+        engine.state.lock().unwrap().agents.get_mut(id).unwrap().raw_since = Instant::now() - SETTLE;
+        let deliveries = engine.tick().2;
+        assert_eq!(deliveries.iter().map(|d| d.text.as_str()).collect::<Vec<_>>(), ["first"]);
+        let states: Vec<String> = engine.state.lock().unwrap().agents[id].view.queued.iter().map(|q| q.state.clone()).collect();
+        assert_eq!(states, ["sent", "waiting"]);
+        // One at a time: the next waits for the agent to work and finish.
+        assert!(engine.tick().2.is_empty());
     }
 
     #[test]

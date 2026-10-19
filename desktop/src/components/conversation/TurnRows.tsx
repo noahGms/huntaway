@@ -203,7 +203,7 @@ function FilesChanged({ files }: { files: FileSummary[] }) {
   );
 }
 
-/** Messages sent from Huntaway that the agent has not written to its transcript yet. */
+/** Messages typed into the agent that its transcript does not show yet (waiting ones show above the composer). */
 export function QueuedMessages({ queued, working }: { queued: QueuedMessage[]; working: boolean }) {
   return (
     <>
@@ -216,7 +216,7 @@ export function QueuedMessages({ queued, working }: { queued: QueuedMessage[]; w
             <div className="selectable whitespace-pre-wrap break-words text-[13.5px] leading-[1.6] text-[#e8e4dd]">{q.text}</div>
             <div className="mt-1 flex items-center gap-1.5 text-[11.5px] text-faint">
               <Clock size={11} />
-              {working ? "Waiting: sent when the agent is free" : "Sending…"}
+              {working ? "Sent: read after its current step" : "Sending…"}
             </div>
           </div>
         </div>

@@ -154,13 +154,15 @@ void main() {
     c.agents['default:w2:p1'] = Agent.fromJson('m1', {
       ...agentJson('default:w2:p1', {'status': 'working'}),
       'queued': [
-        {'text': 'Also update the README', 'at': 1791403200},
+        {'id': 'q1', 'text': 'Also update the README', 'at': 1791403200, 'state': 'waiting'},
+        {'id': 'q2', 'text': 'And the changelog', 'at': 1791403200, 'state': 'sent'},
       ],
     });
     await tester.pumpWidget(host(model, const AgentScreen(machineId: 'm1', agentId: 'default:w2:p1')));
     await tester.pump();
     expect(find.text('Also update the README'), findsOneWidget);
-    expect(find.text('Waiting — will be sent when the agent is free'), findsOneWidget);
+    expect(find.textContaining('Queued · sent when the agent finishes'), findsOneWidget);
+    expect(find.text('Sent · read after its current step'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 

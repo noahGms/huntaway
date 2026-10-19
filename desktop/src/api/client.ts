@@ -61,7 +61,12 @@ export const api = {
   timeline: (m: string, id: string, before?: number, limit = 120) =>
     api.get<TimelinePage>(m, `/v1/agents/${seg(id)}/timeline${query({ before, limit })}`),
 
-  sendMessage: (m: string, id: string, text: string) => api.post(m, `/v1/agents/${seg(id)}/messages`, { text }),
+  /** Queued by the daemon while the agent works, unless `now`. */
+  sendMessage: (m: string, id: string, text: string, now = false) =>
+    api.post<{ ok: boolean; queued?: boolean }>(m, `/v1/agents/${seg(id)}/messages`, { text, now: now || undefined }),
+  /** Removes a waiting message; returns its text. */
+  removeQueued: (m: string, id: string, queued: string) => api.post<{ ok: boolean; text: string }>(m, `/v1/agents/${seg(id)}/queue/${seg(queued)}/remove`),
+  sendQueuedNow: (m: string, id: string, queued: string) => api.post(m, `/v1/agents/${seg(id)}/queue/${seg(queued)}/send`),
   interrupt: (m: string, id: string) => api.post(m, `/v1/agents/${seg(id)}/interrupt`),
   /** Answers the prompt `interactionId`; the daemon refuses with 409 `interaction_changed` if the agent moved on. */
   choose: (m: string, id: string, interactionId: string, number: number, text?: string) =>

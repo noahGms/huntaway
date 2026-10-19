@@ -111,8 +111,17 @@ class BridgeClient {
     return (items, (r['has_more'] as bool?) ?? false);
   }
 
+  /// Queued by the bridge while the agent works.
   Future<void> sendMessage(String agentId, String text) =>
       _send('POST', '/v1/agents/$agentId/messages', body: {'text': text});
+
+  /// Removes a waiting message; returns its text.
+  Future<String> removeQueued(String agentId, String queuedId) async {
+    final r = await _send('POST', '/v1/agents/$agentId/queue/$queuedId/remove');
+    return (r is Map ? r['text'] as String? : null) ?? '';
+  }
+
+  Future<void> sendQueuedNow(String agentId, String queuedId) => _send('POST', '/v1/agents/$agentId/queue/$queuedId/send');
 
   /// Sends Esc. The bridge refuses with `agent_blocked` while the agent
   /// waits on a prompt (Esc would deny it), unless [force].

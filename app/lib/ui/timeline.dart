@@ -558,45 +558,53 @@ class AgentLaunchCard extends StatelessWidget {
 
 /// A message sent from Huntaway that the transcript does not show yet.
 class QueuedBubble extends StatelessWidget {
-  const QueuedBubble(this.message, {super.key, required this.waiting});
+  const QueuedBubble(this.message, {super.key, required this.working, this.onTap});
   final QueuedMessage message;
+  final bool working;
 
-  /// The agent is busy: the message goes in when it is free.
-  final bool waiting;
+  /// Actions on a waiting message (send now, edit, remove).
+  final VoidCallback? onTap;
 
   @override
-  Widget build(BuildContext context) => Align(
-        alignment: Alignment.centerRight,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.82),
-          child: Opacity(
-            opacity: 0.75,
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
-              decoration: BoxDecoration(
-                color: HuntawayColors.user,
-                border: Border.all(color: const Color(0xFF3A3731)),
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(18),
-                  topRight: Radius.circular(18),
-                  bottomLeft: Radius.circular(18),
-                  bottomRight: Radius.circular(5),
-                ),
-              ),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                Text(message.text, style: const TextStyle(fontSize: 15, height: 1.4)),
-                const SizedBox(height: 4),
-                Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(waiting ? Icons.schedule : Icons.arrow_upward_rounded, size: 12, color: HuntawayColors.muted),
-                  const SizedBox(width: 4),
-                  Flexible(
-                    child: Text(
-                      waiting ? 'Waiting — will be sent when the agent is free' : 'Sending…',
-                      style: const TextStyle(fontSize: 10.5, color: HuntawayColors.muted),
-                    ),
+  Widget build(BuildContext context) => GestureDetector(
+        onTap: onTap,
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.82),
+            child: Opacity(
+              opacity: 0.75,
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
+                decoration: BoxDecoration(
+                  color: HuntawayColors.user,
+                  border: Border.all(color: const Color(0xFF3A3731)),
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(18),
+                    topRight: Radius.circular(18),
+                    bottomLeft: Radius.circular(18),
+                    bottomRight: Radius.circular(5),
                   ),
+                ),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                  Text(message.text, style: const TextStyle(fontSize: 15, height: 1.4)),
+                  const SizedBox(height: 4),
+                  Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(message.waiting ? Icons.schedule : Icons.arrow_upward_rounded, size: 12, color: HuntawayColors.muted),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        message.waiting
+                            ? 'Queued · sent when the agent finishes${onTap != null ? ' · tap for options' : ''}'
+                            : working
+                                ? 'Sent · read after its current step'
+                                : 'Sending…',
+                        style: const TextStyle(fontSize: 10.5, color: HuntawayColors.muted),
+                      ),
+                    ),
+                  ]),
                 ]),
-              ]),
+              ),
             ),
           ),
         ),

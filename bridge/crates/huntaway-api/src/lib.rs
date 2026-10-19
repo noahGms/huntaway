@@ -411,9 +411,19 @@ pub struct AgentView {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct QueuedMessage {
+    #[serde(default)]
+    pub id: String,
     pub text: String,
     /// Seconds since the epoch.
     pub at: u64,
+    /// `waiting`: held by the daemon until the agent is free (can be removed
+    /// or sent now). `sent`: typed into the agent, not in its transcript yet.
+    #[serde(default = "sent")]
+    pub state: String,
+}
+
+fn sent() -> String {
+    "sent".into()
 }
 
 // ------------------------------------------------------------------- machine

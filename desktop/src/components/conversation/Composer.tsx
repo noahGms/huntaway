@@ -1,8 +1,8 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { ArrowUp, AtSign, FileText, Image as ImageIcon, Paperclip, Slash, Square, X } from "lucide-react";
+import { ArrowUp, AtSign, CornerDownLeft, FileText, Image as ImageIcon, ListOrdered, Paperclip, Pencil, Slash, Square, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { api, app, errorMessage } from "../../api/client";
-import type { AgentView, FileMatch } from "../../api/types";
+import type { AgentView, FileMatch, QueuedMessage } from "../../api/types";
 import { markSent, useStop } from "../../hooks/useStop";
 import { basename } from "../../lib/format";
 import { MOD } from "../../lib/keys";
@@ -75,6 +75,9 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
   const canReadFiles = can(machine, "files.read");
   const disabledReason = !allowed ? (blocked ? "This device can't answer prompts" : "This device can't send messages") : !online ? "Machine offline" : null;
   const idle = agent.attention.status === "idle" || agent.attention.status === "done";
+  const waitingQueue = agent.queued.filter((q) => q.state === "waiting");
+  // Sent now, the message would interrupt the agent's turn: it waits in the queue.
+  const queues = !blocked && (agent.attention.status === "working" || waitingQueue.length > 0);
   const slash =
     text.startsWith("/") && !text.includes(" ") && !text.includes("\n") && slashClosed !== text ? (SLASH[agent.kind] ?? []).filter(([c]) => c.startsWith(text)) : [];
   const popup: { label: string; hint?: string; value: string; icon: React.ReactNode }[] = mention
@@ -254,6 +257,23 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
           ))}
         </div>
       )}
+      {waitingQueue.length > 0 && (
+        <MessageQueue
+          machineId={machineId}
+          agentId={agent.id}
+          queued={waitingQueue}
+          onEdit={(q) => {
+            // Back in the box, before what is being typed.
+            void api
+              .removeQueued(machineId, agent.id, q.id)
+              .then((r) => {
+                setText(text ? `${r.text}\n${text}` : r.text);
+                ref.current?.focus();
+              })
+              .catch((e) => toast(errorMessage(e), "error"));
+          }}
+        />
+      )}
       <div className={`relative rounded-2xl border bg-surface transition-colors ${disabledReason ? "border-border opacity-70" : "border-border focus-within:border-[#3a414c]"}`}>
         {popup.length > 0 && (
           <div className="absolute bottom-full left-0 right-0 mb-2 max-h-[280px] overflow-y-auto rounded-xl border border-border bg-surface p-1 shadow-[0_-12px_30px_rgba(0,0,0,0.4)]">
@@ -292,7 +312,7 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
           rows={1}
           value={text}
           disabled={!!disabledReason}
-          placeholder={disabledReason ?? (blocked ? "Deny and say what to do instead… (or answer above)" : "Message…  (@ file, / command)")}
+          placeholder={disabledReason ?? (blocked ? "Deny and say what to do instead… (or answer above)" : queues ? "Queue a message for when the agent finishes…" : "Message…  (@ file, / command)")}
           onChange={(e) => {
             setText(e.target.value);
             updateMention(e.target.value, e.target.selectionStart);
@@ -366,14 +386,55 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
               onClick={() => void send()}
               disabled={!!disabledReason || sending || (!text.trim() && !attachments.length)}
               className="flex h-8 w-8 items-center justify-center rounded-[10px] bg-accent text-on-accent transition-opacity hover:bg-[#fff3e2] disabled:opacity-30"
-              aria-label={blocked ? "Deny with this message" : "Send"}
-              title={`${blocked ? "Deny with this message" : "Send"} (${enterToSend ? "Enter" : `${MOD} Enter`})`}
+              aria-label={blocked ? "Deny with this message" : queues ? "Queue" : "Send"}
+              title={`${blocked ? "Deny with this message" : queues ? "Queue: sent when the agent finishes" : "Send"} (${enterToSend ? "Enter" : `${MOD} Enter`})`}
             >
               {sending ? <Spinner /> : <ArrowUp size={16} strokeWidth={2.5} />}
             </button>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Messages held until the agent finishes its turn, sent one by one. */
+function MessageQueue({ machineId, agentId, queued, onEdit }: { machineId: string; agentId: string; queued: QueuedMessage[]; onEdit: (q: QueuedMessage) => void }) {
+  const toast = useUi((s) => s.toast);
+  const run = (p: Promise<unknown>) => void p.catch((e) => toast(errorMessage(e), "error"));
+  return (
+    <div className="mb-2 overflow-hidden rounded-xl border border-border bg-surface">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-[11.5px] text-faint">
+        <ListOrdered size={12} />
+        {queued.length} queued · sent when the agent finishes
+      </div>
+      {queued.map((q, i) => (
+        <div key={q.id} className="group flex items-start gap-2 px-3 py-1.5 text-[12.5px] [&+&]:border-t [&+&]:border-border">
+          <span className="w-4 shrink-0 pt-px text-right font-mono text-[11px] text-faint">{i + 1}</span>
+          <span className="selectable min-w-0 flex-1 whitespace-pre-wrap break-words text-text line-clamp-3">{q.text}</span>
+          <span className="flex shrink-0 items-center gap-0.5 opacity-60 group-hover:opacity-100">
+            <button
+              onClick={() => run(api.sendQueuedNow(machineId, agentId, q.id))}
+              className="rounded-md p-1 text-faint hover:bg-surface-high hover:text-text"
+              title="Send now, without waiting for the agent to finish"
+              aria-label="Send now"
+            >
+              <CornerDownLeft size={13} />
+            </button>
+            <button onClick={() => onEdit(q)} className="rounded-md p-1 text-faint hover:bg-surface-high hover:text-text" title="Edit" aria-label="Edit">
+              <Pencil size={13} />
+            </button>
+            <button
+              onClick={() => run(api.removeQueued(machineId, agentId, q.id))}
+              className="rounded-md p-1 text-faint hover:bg-surface-high hover:text-error"
+              title="Remove from the queue"
+              aria-label="Remove"
+            >
+              <Trash2 size={13} />
+            </button>
+          </span>
+        </div>
+      ))}
     </div>
   );
 }
