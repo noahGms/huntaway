@@ -1,6 +1,6 @@
 import * as RD from "@radix-ui/react-dialog";
 import { Command } from "cmdk";
-import { Boxes, Clock, FolderGit2, Layers, PanelLeft, PanelRight, Play, Plus, RotateCw, Server, Settings, Square, SquareTerminal } from "lucide-react";
+import { Boxes, Clock, FolderGit2, Layers, PanelLeft, PanelRight, Play, Plus, Puzzle, RotateCw, Server, Settings, Square, SquareTerminal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "../api/client";
 import { useConversations } from "../hooks/useConversations";
@@ -70,6 +70,7 @@ export function CommandPalette() {
     ...(selected?.live ? [{ id: "terminal", label: "Open terminal", keywords: "shell", icon: <SquareTerminal size={15} />, run: () => ui.setPanelTab("terminal") }] : []),
     { id: "pair", label: "Add machine", keywords: "server pair", icon: <Server size={15} />, run: () => ui.openPair() },
     { id: "servers", label: "Servers", keywords: "machines", icon: <Server size={15} />, run: () => ui.setView("servers") },
+    { id: "skills", label: "Skills", keywords: "skill library sync", icon: <Puzzle size={15} />, run: () => ui.setView("skills") },
     { id: "history", label: "History", keywords: "past conversations", icon: <Clock size={15} />, run: () => ui.setView("history") },
     { id: "sidebar", label: "Toggle sidebar", keywords: "show hide", icon: <PanelLeft size={15} />, run: ui.toggleSidebar },
     { id: "panel", label: "Toggle activity panel", keywords: "show hide details", icon: <PanelRight size={15} />, run: ui.togglePanel },

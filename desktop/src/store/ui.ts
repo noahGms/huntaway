@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 
-export type View = "conversations" | "servers" | "history" | "settings" | "project";
+export type View = "conversations" | "servers" | "skills" | "history" | "settings" | "project";
 export type PanelTab = "activity" | "files" | "terminal";
 
 export interface Toast {

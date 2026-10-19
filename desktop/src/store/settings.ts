@@ -15,6 +15,8 @@ const defaults: Settings = {
   enter_to_send: true,
   show_cost: true,
   grouping: "date",
+  skills_dir: null,
+  skills_auto_sync: true,
 };
 
 interface SettingsState {

@@ -53,6 +53,20 @@ struct Machine {
     opening: HashMap<String, u64>,
     /// Agents whose `agent.item` events the front end wants (`None` = all).
     items: Option<Vec<String>>,
+    /// Number of its last successful connection (`CONNECT_SEQ`): a new one
+    /// means the daemon may have restarted.
+    connects: u64,
+}
+
+static CONNECT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// An online machine, for background jobs (skills sync).
+#[derive(Clone)]
+pub struct OnlineMachine {
+    pub machine_id: String,
+    pub permissions: Vec<String>,
+    pub client: Client,
+    pub connects: u64,
 }
 
 /// Conversation shown in the focused window: no notification for it.
@@ -211,6 +225,7 @@ impl Machines {
             terminals: HashMap::new(),
             opening: HashMap::new(),
             items,
+            connects: 0,
         };
         let known = self.inner.lock().unwrap().insert(id.clone(), machine).is_some();
         // A reconnection shows "connecting" right away; a new machine comes with `machines-changed`.
@@ -240,6 +255,21 @@ impl Machines {
             .get(machine_id)
             .map(|m| m.client.clone())
             .ok_or_else(|| "unknown machine".to_string())
+    }
+
+    pub fn online(&self) -> Vec<OnlineMachine> {
+        self.inner
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|m| m.status.state == "online")
+            .map(|m| OnlineMachine {
+                machine_id: m.record.machine_id.clone(),
+                permissions: m.record.permissions.clone(),
+                client: m.client.clone(),
+                connects: m.connects,
+            })
+            .collect()
     }
 
     pub fn views(&self) -> Vec<MachineView> {
@@ -344,6 +374,7 @@ impl Machines {
                         });
                     }
                     m.status.state = "online".into();
+                    m.connects = CONNECT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     m.status.address = Some(address.clone());
                     m.status.error = None;
                     m.status.retry_in_ms = None;

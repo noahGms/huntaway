@@ -85,6 +85,41 @@ export interface Settings {
   enter_to_send: boolean;
   show_cost: boolean;
   grouping: "date" | "project";
+  /** Local skills library; `null` = `~/huntaway-skills`. */
+  skills_dir: string | null;
+  skills_auto_sync: boolean;
+}
+
+/** `skills::LibrarySkill`: a skill of the local library. */
+export interface LibrarySkill {
+  name: string;
+  description: string | null;
+  hash: string;
+  files: number;
+  path: string;
+}
+
+/** `skills::LibraryView`. */
+export interface LibraryView {
+  path: string;
+  exists: boolean;
+  skills: LibrarySkill[];
+}
+
+/** `skills::SyncStatus`: last skills sync of a machine. */
+export interface SkillSyncStatus {
+  state: "syncing" | "ok" | "error";
+  error: string | null;
+  at: number;
+  pushed: string[];
+  removed: string[];
+}
+
+/** `skills::SyncReport`. */
+export interface SkillSyncReport {
+  pushed: string[];
+  removed: string[];
+  errors: string[];
 }
 
 export interface LocalStatus {

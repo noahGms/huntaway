@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compareVersions, daemonOutdated } from "./updates";
+import { compareVersions, daemonOutdated, daemonUpdated } from "./updates";
 
 describe("versions", () => {
   it("compares release versions", () => {
@@ -13,5 +13,15 @@ describe("versions", () => {
     expect(daemonOutdated("0.1.1", "0.1.1")).toBe(false);
     expect(daemonOutdated(null, "0.1.1")).toBe(false);
     expect(daemonOutdated("0.1.0", null)).toBe(false);
+  });
+});
+
+describe("daemon self-update", () => {
+  it("is done once the machine runs the target version or newer", () => {
+    expect(daemonUpdated("0.2.0", "0.2.0")).toBe(true);
+    expect(daemonUpdated("0.2.1", "0.2.0")).toBe(true);
+    expect(daemonUpdated("0.1.9", "0.2.0")).toBe(false);
+    expect(daemonUpdated(undefined, "0.2.0")).toBe(false);
+    expect(daemonUpdated("0.2.0", null)).toBe(false);
   });
 });

@@ -6,6 +6,7 @@ mod commands;
 mod local;
 mod machines;
 mod notify;
+mod skills;
 mod storage;
 mod tray;
 
@@ -44,7 +45,10 @@ pub fn run() {
             let dir = app.path().app_config_dir()?;
             let machines = Machines::new(app.handle().clone(), Storage::new(dir));
             machines.start();
+            let sync = skills::SharedSync::default();
+            skills::start(app.handle().clone(), machines.clone(), sync.clone());
             app.manage::<Shared>(machines);
+            app.manage::<skills::SharedSync>(sync);
             tray::create(app.handle())?;
             // Linux has no install-time registration of `huntaway://` (AppImage).
             #[cfg(target_os = "linux")]
@@ -91,6 +95,16 @@ pub fn run() {
             commands::terminal_input,
             commands::set_stream_items,
             commands::test_notification,
+            skills::skills_library,
+            skills::skills_create,
+            skills::skills_delete_local,
+            skills::skills_files,
+            skills::skills_open_folder,
+            skills::skills_remote,
+            skills::skills_push,
+            skills::skills_sync,
+            skills::skills_delete_remote,
+            skills::skills_sync_status,
         ])
         .build(tauri::generate_context!())
         .expect("failed to start Huntaway Desktop");

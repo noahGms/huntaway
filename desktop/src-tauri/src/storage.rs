@@ -43,6 +43,10 @@ pub struct Settings {
     pub show_cost: bool,
     /// Grouping of the sidebar: `date` or `project`.
     pub grouping: String,
+    /// Local skills library; `None` = `~/huntaway-skills`.
+    pub skills_dir: Option<String>,
+    /// Push changed skills to the online machines on their own.
+    pub skills_auto_sync: bool,
 }
 
 impl Default for Settings {
@@ -56,6 +60,8 @@ impl Default for Settings {
             enter_to_send: true,
             show_cost: true,
             grouping: "date".into(),
+            skills_dir: None,
+            skills_auto_sync: true,
         }
     }
 }

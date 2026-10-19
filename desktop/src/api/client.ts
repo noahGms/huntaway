@@ -4,10 +4,13 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   ApiError,
+  DaemonUpdateCheck,
   FileMatch,
   GitStatus,
   HistoryEntry,
   HistoryPage,
+  LibrarySkill,
+  LibraryView,
   LocalStatus,
   MachineRecord,
   MachineResponse,
@@ -18,6 +21,10 @@ import type {
   ScriptView,
   Settings,
   ShellView,
+  SkillFile,
+  SkillSyncReport,
+  SkillSyncStatus,
+  SkillView,
   TerminalMessage,
   TerminalTarget,
   TimelinePage,
@@ -60,7 +67,7 @@ export const api = {
   choose: (m: string, id: string, interactionId: string, number: number, text?: string) =>
     api.post(m, `/v1/agents/${seg(id)}/choice`, { number, text: text || undefined, interaction_id: interactionId }),
   deny: (m: string, id: string, interactionId: string, text?: string) =>
-    api.post(m, `/v1/agents/${seg(id)}/deny`, { text: text || undefined, interaction_id: interactionId }),
+    api.post<{ ok: boolean; message_sent?: boolean }>(m, `/v1/agents/${seg(id)}/deny`, { text: text || undefined, interaction_id: interactionId }),
   createAgent: (
     m: string,
     body: { session: string; workspace_id: string; kind: string; prompt: string; model?: string; cwd?: string },
@@ -125,4 +132,27 @@ export const app = {
     invoke<void>("terminal_input", { machineId, ...terminalArgs(target), text: input.text ?? null, keys: input.keys ?? null }),
   /** Streams `agent.item` events of these agents only (`null` = all). */
   setStreamItems: (machineId: string, agentIds: string[] | null) => invoke<void>("set_stream_items", { machineId, agentIds }),
+};
+
+// Skills library (local folder, read by the backend) and its sync with the
+// daemons, plus daemon self-update.
+export const skills = {
+  library: () => invoke<LibraryView>("skills_library"),
+  create: (name: string, description: string) => invoke<LibrarySkill>("skills_create", { name, description }),
+  deleteLocal: (name: string) => invoke<void>("skills_delete_local", { name }),
+  files: (name: string) => invoke<SkillFile[]>("skills_files", { name }),
+  /** Opens the library folder (created if missing), or a skill's folder. */
+  openFolder: (name?: string) => invoke<void>("skills_open_folder", { name: name ?? null }),
+  remote: (machineId: string) => invoke<SkillView[]>("skills_remote", { machineId }),
+  push: (machineId: string, name: string) => invoke<SkillView>("skills_push", { machineId, name }),
+  /** Pushes the skills that differ; `removeExtra` also deletes the machine's skills missing from the library. */
+  sync: (machineId: string, removeExtra = false) => invoke<SkillSyncReport>("skills_sync", { machineId, removeExtra }),
+  deleteRemote: (machineId: string, name: string) => invoke<void>("skills_delete_remote", { machineId, name }),
+  syncStatus: () => invoke<Record<string, SkillSyncStatus>>("skills_sync_status"),
+};
+
+export const daemon = {
+  checkUpdate: (machineId: string) => api.get<DaemonUpdateCheck>(machineId, "/v1/daemon/update"),
+  /** Installs the latest huntawayd; the daemon restarts right after answering (409 `up_to_date` when current). */
+  update: (machineId: string) => api.post<{ ok: boolean; from: string; to: string }>(machineId, "/v1/daemon/update"),
 };

@@ -1,10 +1,10 @@
-import { Archive, Check, ChevronDown, ChevronRight, Clock, Eye, FolderGit2, Layers, Monitor, Plus, Search, Server, Settings, SlidersHorizontal, Star, ArrowUpRight, Boxes } from "lucide-react";
+import { Archive, Check, ChevronDown, ChevronRight, Clock, Eye, FolderGit2, Layers, Monitor, Plus, Puzzle, Search, Server, Settings, SlidersHorizontal, Star, ArrowUpRight, Boxes } from "lucide-react";
 import { memo, useEffect, useMemo, useRef } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import type { MachineView } from "../../api/types";
 import { useConversations } from "../../hooks/useConversations";
 import { isMac } from "../../lib/platform";
-import { buildSidebarRows, compactAge, longDate, projectKey, statusLabel, type Conversation, type SidebarRow } from "../../lib/conversations";
+import { buildSidebarRows, compactAge, longDate, projectKey, statusLabel, treeCollapsedId, treeExpandedId, type Conversation, type ConvTree, type SidebarRow } from "../../lib/conversations";
 import { MOD } from "../../lib/keys";
 import { orderMachines, spaceLabel, spaceMachineIds, type Space } from "../../lib/spaces";
 import { machineList, useMachines } from "../../store/machines";
@@ -82,6 +82,7 @@ export function Sidebar() {
   const nav: { id: View; label: string; icon: React.ReactNode }[] = [
     { id: "history", label: "History", icon: <Clock size={15} /> },
     { id: "servers", label: "Servers", icon: <Server size={15} /> },
+    { id: "skills", label: "Skills", icon: <Puzzle size={15} /> },
     { id: "settings", label: "Settings", icon: <Settings size={15} /> },
   ];
   const active = view === "conversations" ? selected : null;
@@ -161,7 +162,7 @@ function Row({ row, active, machines }: { row: SidebarRow; active: string | null
     case "project":
       return <ProjectRow row={row} />;
     case "conv":
-      return <ConversationRow conv={row.conv} active={active === row.conv.key} depth={row.depth} suffix={row.suffix} />;
+      return <ConversationRow conv={row.conv} active={active === row.conv.key} depth={row.depth} suffix={row.suffix} tree={row.tree} />;
     case "inactive":
       return (
         <button
@@ -250,26 +251,69 @@ const ProjectRow = memo(function ProjectRow({ row }: { row: Extract<SidebarRow, 
   );
 });
 
-const ConversationRow = memo(function ConversationRow({ conv, active, depth, suffix }: { conv: Conversation; active: boolean; depth: number; suffix?: string }) {
+const ConversationRow = memo(function ConversationRow({
+  conv,
+  active,
+  depth,
+  suffix,
+  tree,
+}: {
+  conv: Conversation;
+  active: boolean;
+  depth: number;
+  suffix?: string;
+  tree?: ConvTree;
+}) {
   // An offline machine's last known status is stale: grey it out.
   const offline = useMachines((s) => s.machines[conv.machineId]?.status.state !== "online");
-  const attention = offline && conv.live ? null : conv.attention;
+  // Folded: the most urgent state of the agents it started shows on it.
+  const own = tree && !tree.expanded ? tree.rollup : conv.attention;
+  const attention = offline && conv.live ? null : own;
   const blocked = attention?.status === "blocked";
+  const toggleTree = () => {
+    if (!tree) return;
+    const { collapsed, toggleCollapsed } = usePrefs.getState();
+    const c = treeCollapsedId(conv.key);
+    const x = treeExpandedId(conv.key);
+    if (collapsed.includes(c)) toggleCollapsed(c);
+    if (collapsed.includes(x)) toggleCollapsed(x);
+    toggleCollapsed(tree.expanded ? c : x);
+  };
   return (
     <div className="px-1.5">
-      <button
-        onClick={() => useUi.getState().select(conv.key)}
-        className={`flex h-7 w-full items-center gap-2 rounded-md pr-2 text-left transition-colors ${active ? "bg-surface-high" : "hover:bg-surface-high/50"}`}
+      <div
+        className={`flex h-7 w-full items-center rounded-md pr-2 transition-colors ${active ? "bg-surface-high" : "hover:bg-surface-high/50"}`}
         style={indent(depth + (depth ? 0.6 : 0))}
-        title={`${conv.title}\n${conv.project} · ${conv.machineName}\n${agentLabel(conv.kind)} · ${offline && conv.live ? "Machine offline" : statusLabel(conv.attention)}${conv.lastActivity ? ` · ${longDate(conv.lastActivity)}` : ""}`}
       >
-        <span className="flex w-3 shrink-0 justify-center">
-          <StatusDot attention={attention} size={7} />
-        </span>
-        <span className={`min-w-0 flex-1 truncate text-[13px] leading-5 ${conv.live ? (active ? "text-text" : "text-[#d9d5ce]") : "text-muted"}`}>{conv.title}</span>
-        {suffix && <span className="min-w-0 max-w-[40%] shrink truncate text-[11px] text-faint">{suffix}</span>}
-        <span className={`w-8 shrink-0 text-right text-[11px] tabular-nums ${blocked ? "text-blocked" : "text-faint"}`}>{compactAge(conv.lastActivity)}</span>
-      </button>
+        {tree ? (
+          <button
+            onClick={toggleTree}
+            className="flex h-7 w-4 shrink-0 items-center justify-center text-faint hover:text-text"
+            aria-expanded={tree.expanded}
+            aria-label={tree.expanded ? "Hide the agents it started" : "Show the agents it started"}
+            title={`${tree.total} agent${tree.total > 1 ? "s" : ""} started by this one`}
+          >
+            {tree.expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </button>
+        ) : (
+          depth > 0 && <span className="w-1 shrink-0" />
+        )}
+        <button
+          onClick={() => useUi.getState().select(conv.key)}
+          className="flex h-7 min-w-0 flex-1 items-center gap-2 text-left"
+          title={`${conv.title}\n${conv.project} · ${conv.machineName}\n${agentLabel(conv.kind)} · ${offline && conv.live ? "Machine offline" : statusLabel(conv.attention)}${conv.lastActivity ? ` · ${longDate(conv.lastActivity)}` : ""}`}
+        >
+          <span className="flex w-3 shrink-0 justify-center">
+            <StatusDot attention={attention} size={7} />
+          </span>
+          <span className={`min-w-0 flex-1 truncate text-[13px] leading-5 ${conv.live ? (active ? "text-text" : "text-[#d9d5ce]") : "text-muted"}`}>{conv.title}</span>
+          {suffix && <span className="min-w-0 max-w-[40%] shrink truncate text-[11px] text-faint">{suffix}</span>}
+          {tree && !tree.expanded && (
+            <span className={`shrink-0 rounded px-1 text-[10.5px] leading-4 tabular-nums ${blocked ? "bg-blocked font-semibold text-ink" : "bg-surface-high text-muted"}`}>{tree.total}</span>
+          )}
+          <span className={`w-8 shrink-0 text-right text-[11px] tabular-nums ${blocked ? "text-blocked" : "text-faint"}`}>{compactAge(conv.lastActivity)}</span>
+        </button>
+      </div>
     </div>
   );
 });

@@ -8,8 +8,8 @@ import { Menu, MenuItem, MenuSeparator } from "../components/ui/Menu";
 import { Badge, MachineDot } from "../components/ui/Status";
 import { duration } from "../lib/format";
 import { moveMachine, orderMachines } from "../lib/spaces";
-import { DAEMON_UPDATE_COMMAND, daemonOutdated, useUpdates } from "../lib/updates";
-import { machineList, useMachines } from "../store/machines";
+import { DAEMON_UPDATE_COMMAND, daemonOutdated, useDaemonUpdates, useUpdates } from "../lib/updates";
+import { can, machineList, useMachines } from "../store/machines";
 import { usePrefs } from "../store/prefs";
 import { useUi } from "../store/ui";
 
@@ -24,6 +24,9 @@ const PERMISSION_LABELS: Record<string, string> = {
   "terminal.read": "terminal",
   "history.read": "history",
   "files.read": "files",
+  "skills.read": "skills",
+  "skills.edit": "push skills",
+  "daemon.update": "update daemon",
 };
 
 export function PageHeader({ title, subtitle, children }: { title: string; subtitle?: string; children?: React.ReactNode }) {
@@ -58,7 +61,7 @@ export function ServersPage() {
       </PageHeader>
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
         <div className="mx-auto max-w-[1100px] space-y-4">
-          {outdated.length > 0 && latest && <DaemonUpdateNotice latest={latest} count={outdated.length} />}
+          {outdated.length > 0 && latest && <DaemonUpdateNotice latest={latest} outdated={outdated} />}
           {machines.length > 0 && (
             <div className="overflow-hidden rounded-xl border border-border bg-surface">
               <div className={`${COLS} border-b border-border px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-faint`}>
@@ -105,17 +108,70 @@ function CopyCommand({ command }: { command: string }) {
   );
 }
 
-function DaemonUpdateNotice({ latest, count }: { latest: string; count: number }) {
+/** Can update its daemon from here: online, with `daemon.update`. */
+const selfUpdatable = (m: MachineView) => m.status.state === "online" && can(m, "daemon.update");
+
+function DaemonUpdateNotice({ latest, outdated }: { latest: string; outdated: MachineView[] }) {
+  const { updates, run } = useDaemonUpdates();
+  const count = outdated.length;
+  const updatable = outdated.filter((m) => selfUpdatable(m) && updates[m.record.machine_id]?.state !== "updating");
+  const manual = outdated.filter((m) => !can(m, "daemon.update"));
+  const updating = outdated.filter((m) => updates[m.record.machine_id]?.state === "updating").length;
   return (
     <div className="rounded-xl border border-border bg-surface px-4 py-3">
-      <div className="mb-2 flex items-center gap-2 text-[13px]">
-        <ArrowDownCircle size={15} className="text-blocked" />
-        <span>
-          huntawayd {latest} is available · {count} machine{count === 1 ? " is" : "s are"} out of date. Run this on each one:
+      <div className={`flex items-center gap-2 text-[13px] ${manual.length ? "mb-2" : ""}`}>
+        <ArrowDownCircle size={15} className="shrink-0 text-blocked" />
+        <span className="min-w-0 flex-1">
+          huntawayd {latest} is available · {count} machine{count === 1 ? " is" : "s are"} out of date
+          {updating > 0 && <span className="text-muted"> · updating {updating}…</span>}
+          {manual.length > 0 && (
+            <>
+              . Run this on {manual.length === count ? "each one" : manual.map((m) => m.record.name).join(", ")}:
+            </>
+          )}
         </span>
+        {updatable.length > 0 && (
+          <Button size="sm" variant="primary" onClick={() => updatable.forEach((m) => void run(m.record.machine_id))}>
+            Update all ({updatable.length})
+          </Button>
+        )}
       </div>
-      <CopyCommand command={DAEMON_UPDATE_COMMAND} />
+      {manual.length > 0 && <CopyCommand command={DAEMON_UPDATE_COMMAND} />}
     </div>
+  );
+}
+
+/** Update badge of a machine row: button when the daemon can update itself. */
+function DaemonUpdateCell({ machine, latest }: { machine: MachineView; latest: string | null }) {
+  const id = machine.record.machine_id;
+  const update = useDaemonUpdates((s) => s.updates[id]);
+  const run = useDaemonUpdates((s) => s.run);
+  if (update?.state === "updating") {
+    return (
+      <span className="flex shrink-0 items-center gap-1 text-[11.5px] text-muted" title={update.to ? `Installing huntawayd ${update.to}` : undefined}>
+        <Spinner className="h-3 w-3" /> Updating…
+      </span>
+    );
+  }
+  if (update?.state === "error") {
+    return (
+      <button onClick={() => void run(id)} title={`${update.error ?? "Update failed"}. Click to retry.`}>
+        <Badge tone="error">update failed</Badge>
+      </button>
+    );
+  }
+  if (!daemonOutdated(versionOf(machine), latest)) return null;
+  if (selfUpdatable(machine)) {
+    return (
+      <button onClick={() => void run(id)} title={`Install huntawayd ${latest} on this machine; it restarts on its own`}>
+        <Badge tone="blocked">Update</Badge>
+      </button>
+    );
+  }
+  return (
+    <span title={`huntawayd ${latest} is available${can(machine, "daemon.update") ? "" : ": update it on the machine (no daemon.update permission)"}`}>
+      <Badge tone="blocked">update</Badge>
+    </span>
   );
 }
 
@@ -231,11 +287,7 @@ function MachineRow({ machine, order, first, last, latest }: { machine: MachineV
         <span className="text-right tabular-nums text-muted">{status.state === "online" && status.latency_ms !== null ? `${status.latency_ms} ms` : "—"}</span>
         <span className="flex min-w-0 items-center gap-1.5">
           <span className={`truncate tabular-nums ${status.state === "online" ? "" : "text-faint"}`}>{version ?? "—"}</span>
-          {daemonOutdated(version, latest) && (
-            <span title={`huntawayd ${latest} is available`}>
-              <Badge tone="blocked">update</Badge>
-            </span>
-          )}
+          <DaemonUpdateCell machine={machine} latest={latest} />
         </span>
         <button onClick={showConversations} className="flex items-center justify-end gap-1.5 tabular-nums hover:underline" title="Show its conversations">
           {waiting > 0 && <span className="rounded bg-blocked px-1 text-[10.5px] font-semibold leading-4 text-ink">{waiting}</span>}

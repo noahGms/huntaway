@@ -22,6 +22,7 @@ import { HistoryPage } from "./pages/HistoryPage";
 import { ProjectPage } from "./pages/ProjectPage";
 import { LocalDaemonCard, ServersPage } from "./pages/ServersPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { SkillsPage } from "./pages/SkillsPage";
 import { START_TIMEOUT_MS, useMachines } from "./store/machines";
 import { useSettings } from "./store/settings";
 import { useUi } from "./store/ui";
@@ -83,6 +84,8 @@ export default function App() {
           {!showSidebar && isMac && <div className="drag absolute left-0 top-0 h-[52px] w-[90px]" />}
           {view === "servers" ? (
             <ServersPage />
+          ) : view === "skills" ? (
+            <SkillsPage />
           ) : view === "history" ? (
             <HistoryPage />
           ) : view === "settings" ? (

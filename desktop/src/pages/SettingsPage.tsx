@@ -213,6 +213,14 @@ export function SettingsPage() {
           <Section title="Machine groups">
             <MachineGroups />
           </Section>
+          <Section title="Skills">
+            <Toggle
+              checked={settings.skills_auto_sync}
+              onChange={(v) => void update({ skills_auto_sync: v })}
+              label="Sync skills automatically"
+              description="Pushes changed skills of the library to every online machine. Never removes skills from a machine."
+            />
+          </Section>
           <Section title="Notifications">
             <Toggle checked={settings.notify_blocked} onChange={(v) => void update({ notify_blocked: v })} label="An agent needs me" description="Approval, question, plan to review." />
             <Toggle checked={settings.notify_done} onChange={(v) => void update({ notify_done: v })} label="An agent is done" />
