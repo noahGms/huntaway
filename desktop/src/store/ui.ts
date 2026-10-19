@@ -4,6 +4,8 @@ import { create } from "zustand";
 
 export type View = "conversations" | "servers" | "skills" | "history" | "settings" | "project";
 export type PanelTab = "activity" | "files" | "terminal";
+/** Terminal tab: a shell in the project folder, or the agent's own pane. */
+export type TerminalMode = "shell" | "agent";
 
 export interface Toast {
   id: number;
@@ -15,6 +17,7 @@ interface UiState {
   view: View;
   selected: string | null;
   panelTab: PanelTab;
+  terminalMode: TerminalMode;
   showSidebar: boolean;
   showPanel: boolean;
   paletteOpen: boolean;
@@ -29,7 +32,7 @@ interface UiState {
   focusedFile: string | null;
   setView: (v: View) => void;
   select: (key: string | null) => void;
-  setPanelTab: (t: PanelTab) => void;
+  setPanelTab: (t: PanelTab, mode?: TerminalMode) => void;
   toggleSidebar: () => void;
   togglePanel: () => void;
   setPalette: (open: boolean) => void;
@@ -50,6 +53,7 @@ export const useUi = create<UiState>((set) => ({
   view: "conversations",
   selected: null,
   panelTab: "activity",
+  terminalMode: "shell",
   showSidebar: true,
   showPanel: true,
   paletteOpen: false,
@@ -61,7 +65,7 @@ export const useUi = create<UiState>((set) => ({
   focusedFile: null,
   setView: (view) => set({ view }),
   select: (selected) => set({ selected, view: "conversations", focusedFile: null }),
-  setPanelTab: (panelTab) => set({ panelTab, showPanel: true }),
+  setPanelTab: (panelTab, mode) => set((s) => ({ panelTab, showPanel: true, terminalMode: mode ?? s.terminalMode })),
   toggleSidebar: () => set((s) => ({ showSidebar: !s.showSidebar })),
   togglePanel: () => set((s) => ({ showPanel: !s.showPanel })),
   setPalette: (paletteOpen) => set({ paletteOpen }),

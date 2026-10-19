@@ -285,3 +285,28 @@ pub fn test_notification(app: tauri::AppHandle) {
         test: true,
     });
 }
+
+/// Opens the system terminal in a local folder: iTerm or Terminal on macOS,
+/// Windows Terminal (else cmd) on Windows, the default emulator on Linux.
+#[tauri::command]
+pub fn open_in_terminal(path: String) -> CmdResult<()> {
+    use std::process::Command;
+    if !std::path::Path::new(&path).is_dir() {
+        return Err(err(format!("no such folder: {path}")));
+    }
+    let spawned = if cfg!(target_os = "macos") {
+        let app = if std::path::Path::new("/Applications/iTerm.app").exists() { "iTerm" } else { "Terminal" };
+        Command::new("open").args(["-a", app, &path]).spawn()
+    } else if cfg!(target_os = "windows") {
+        Command::new("wt")
+            .args(["-d", &path])
+            .spawn()
+            .or_else(|_| Command::new("cmd").args(["/C", "start", "cmd", "/K"]).current_dir(&path).spawn())
+    } else {
+        Command::new("x-terminal-emulator")
+            .current_dir(&path)
+            .spawn()
+            .or_else(|_| Command::new("gnome-terminal").arg(format!("--working-directory={path}")).spawn())
+    };
+    spawned.map(drop).map_err(|e| err(format!("couldn't open a terminal: {e}")))
+}

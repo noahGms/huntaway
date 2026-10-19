@@ -1,5 +1,5 @@
 import { openPath } from "@tauri-apps/plugin-opener";
-import { Archive, ArchiveRestore, ArrowDown, ChevronRight, Copy, FolderOpen, History, MoreHorizontal, PanelRight, Play, RefreshCw, SquareTerminal } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, ChevronRight, Copy, FolderOpen, History, Monitor, MoreHorizontal, PanelRight, Play, RefreshCw, SquareArrowOutUpRight, SquareTerminal } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { api, app, errorMessage } from "../../api/client";
@@ -15,6 +15,7 @@ import { useUi } from "../../store/ui";
 import { Button, IconButton, Kbd, Spinner } from "../ui/Button";
 import { Menu, MenuItem, MenuSeparator } from "../ui/Menu";
 import { AgentIcon, Badge, attentionTone } from "../ui/Status";
+import { openInTerminal } from "../panel/TerminalTab";
 import { ApprovalCard } from "./ApprovalCard";
 import { Composer } from "./Composer";
 import { buildTurns, type TurnRow } from "./turns";
@@ -386,14 +387,24 @@ function Header({ conv }: { conv: Conversation }) {
             </button>
           }
         >
-          {agent && (
-            <MenuItem icon={<SquareTerminal size={14} />} onSelect={() => setPanelTab("terminal")}>
+          {conv.cwd && (
+            <MenuItem icon={<SquareTerminal size={14} />} onSelect={() => setPanelTab("terminal", "shell")}>
               Open terminal
+            </MenuItem>
+          )}
+          {agent && (
+            <MenuItem icon={<Monitor size={14} />} onSelect={() => setPanelTab("terminal", "agent")}>
+              Show agent screen
             </MenuItem>
           )}
           {conv.local && conv.cwd && (
             <MenuItem icon={<FolderOpen size={14} />} onSelect={() => void openPath(conv.cwd!).catch((e) => toast(errorMessage(e), "error"))}>
               Open project folder
+            </MenuItem>
+          )}
+          {conv.local && conv.cwd && (
+            <MenuItem icon={<SquareArrowOutUpRight size={14} />} onSelect={() => openInTerminal(conv.cwd!)}>
+              Open in Terminal
             </MenuItem>
           )}
           {agent?.native_session && (

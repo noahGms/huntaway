@@ -230,6 +230,9 @@ export type SidebarRow =
       depth: number;
       /** `projectKey()` of the machine's projects, in display order (to move this one). */
       siblings: string[];
+      /** Folder of the project, when known. */
+      cwd: string | null;
+      local: boolean;
     }
   | { type: "conv"; id: string; conv: Conversation; depth: number; suffix?: string; tree?: ConvTree }
   | { type: "inactive"; id: string; hidden: number; showing: boolean };
@@ -409,6 +412,8 @@ export function buildSidebarRows(all: Conversation[], opts: SidebarOptions): Sid
           favorite: opts.favorites.has(p.id),
           depth,
           siblings,
+          cwd: p.items.find((c) => c.cwd)?.cwd ?? null,
+          local: p.items.some((c) => c.local),
         });
         if (!collapsed) for (const c of [...p.items].sort(compareStable)) pushConv(c, c.key, depth + 1);
       }

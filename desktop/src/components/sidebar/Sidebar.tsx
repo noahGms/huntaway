@@ -1,8 +1,9 @@
 import { openPath } from "@tauri-apps/plugin-opener";
-import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Clock, Copy, Eye, FolderGit2, FolderOpen, History, Layers, Monitor, Plus, Puzzle, Search, Server, Settings, SlidersHorizontal, Square, SquareTerminal, Star, ArrowUpRight, Boxes } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Clock, Copy, Eye, FolderGit2, FolderOpen, History, Layers, Monitor, Plus, Puzzle, Search, Server, Settings, SlidersHorizontal, Square, SquareArrowOutUpRight, SquareTerminal, Star, ArrowUpRight, Boxes } from "lucide-react";
 import { memo, useEffect, useMemo, useRef } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { errorMessage } from "../../api/client";
+import { openInTerminal } from "../panel/TerminalTab";
 import type { MachineView } from "../../api/types";
 import { useConversations } from "../../hooks/useConversations";
 import { useStop } from "../../hooks/useStop";
@@ -280,6 +281,11 @@ function ProjectMenu({ row, projectId }: { row: Extract<SidebarRow, { type: "pro
       <MenuItem icon={<ArrowUpRight size={14} />} onSelect={() => openProject(row.machineId, row.project)}>
         Open project
       </MenuItem>
+      {row.local && row.cwd && (
+        <MenuItem icon={<SquareArrowOutUpRight size={14} />} onSelect={() => openInTerminal(row.cwd!)}>
+          Open in Terminal
+        </MenuItem>
+      )}
     </>
   );
 }
@@ -362,15 +368,26 @@ function ConversationMenu({ conv, archived }: { conv: Conversation; archived: bo
   const { canStop, stop } = useStop(conv.machineId, agent);
   return (
     <>
-      {agent && (
+      {conv.cwd && (
         <MenuItem
           icon={<SquareTerminal size={14} />}
           onSelect={() => {
             select(conv.key);
-            setPanelTab("terminal");
+            setPanelTab("terminal", "shell");
           }}
         >
           Open terminal
+        </MenuItem>
+      )}
+      {agent && (
+        <MenuItem
+          icon={<Monitor size={14} />}
+          onSelect={() => {
+            select(conv.key);
+            setPanelTab("terminal", "agent");
+          }}
+        >
+          Show agent screen
         </MenuItem>
       )}
       {agent && canStop && (
@@ -386,6 +403,11 @@ function ConversationMenu({ conv, archived }: { conv: Conversation; archived: bo
       {conv.local && conv.cwd && (
         <MenuItem icon={<FolderOpen size={14} />} onSelect={() => void openPath(conv.cwd!).catch((e) => toast(errorMessage(e), "error"))}>
           Open project folder
+        </MenuItem>
+      )}
+      {conv.local && conv.cwd && (
+        <MenuItem icon={<SquareArrowOutUpRight size={14} />} onSelect={() => openInTerminal(conv.cwd!)}>
+          Open in Terminal
         </MenuItem>
       )}
       <MenuItem

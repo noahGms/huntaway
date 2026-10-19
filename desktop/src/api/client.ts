@@ -132,6 +132,8 @@ export const app = {
     return invoke<void>("open_terminal", { machineId, ...terminalArgs(target), onEvent: channel });
   },
   testNotification: () => invoke<void>("test_notification"),
+  /** System terminal in a folder of this computer. */
+  openInTerminal: (path: string) => invoke<void>("open_in_terminal", { path }),
   closeTerminal: (machineId: string, target: TerminalTarget) => invoke<void>("close_terminal", { machineId, ...terminalArgs(target) }),
   terminalInput: (machineId: string, target: TerminalTarget, input: { text?: string; keys?: string[] }) =>
     invoke<void>("terminal_input", { machineId, ...terminalArgs(target), text: input.text ?? null, keys: input.keys ?? null }),

@@ -186,7 +186,7 @@ export function ApprovalCard({ machineId, agent, embedded = false }: { machineId
             ))}
         {allowed && options.length === 0 && interaction.reason !== "prompt" && <span className="text-[12px] text-muted">Reading the menu…</span>}
         <div className="flex-1" />
-        <Button size="sm" variant="ghost" icon={<SquareTerminal size={13} />} onClick={() => setPanelTab("terminal")}>
+        <Button size="sm" variant="ghost" icon={<SquareTerminal size={13} />} onClick={() => setPanelTab("terminal", "agent")}>
           Terminal
         </Button>
         {allowed && interaction.reason === "approval" && !showDeny && (

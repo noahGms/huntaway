@@ -12,9 +12,9 @@ export function RightPanel({ conv }: { conv: Conversation }) {
   const tabs: { id: PanelTab; label: string; icon: React.ReactNode; disabled?: boolean }[] = [
     { id: "activity", label: "Details", icon: <ActivityIcon size={14} /> },
     { id: "files", label: "Files", icon: <FileText size={14} /> },
-    { id: "terminal", label: "Terminal", icon: <SquareTerminal size={14} />, disabled: !conv.live },
+    { id: "terminal", label: "Terminal", icon: <SquareTerminal size={14} />, disabled: !conv.live && !conv.cwd },
   ];
-  const current = !conv.live && panelTab === "terminal" ? "activity" : panelTab;
+  const current = !conv.live && !conv.cwd && panelTab === "terminal" ? "activity" : panelTab;
   return (
     <Tabs.Root value={current} onValueChange={(v) => setPanelTab(v as PanelTab)} className="flex h-full flex-col border-l border-border bg-surface">
       <div className="drag flex h-[52px] shrink-0 items-center gap-2 border-b border-border pl-3 pr-3">
@@ -42,7 +42,7 @@ export function RightPanel({ conv }: { conv: Conversation }) {
         <FilesTab conv={conv} />
       </Tabs.Content>
       <Tabs.Content value="terminal" className="min-h-0 flex-1" forceMount hidden={current !== "terminal"}>
-        {conv.live && conv.agentId && current === "terminal" && <TerminalTab key={conv.key} machineId={conv.machineId} agentId={conv.agentId} />}
+        {current === "terminal" && <TerminalTab key={conv.key} conv={conv} />}
       </Tabs.Content>
     </Tabs.Root>
   );

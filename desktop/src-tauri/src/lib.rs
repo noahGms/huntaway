@@ -95,6 +95,7 @@ pub fn run() {
             commands::terminal_input,
             commands::set_stream_items,
             commands::test_notification,
+            commands::open_in_terminal,
             skills::skills_library,
             skills::skills_create,
             skills::skills_delete_local,

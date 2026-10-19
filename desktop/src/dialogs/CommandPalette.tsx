@@ -67,7 +67,8 @@ export function CommandPalette() {
           run: () => void api.interrupt(selected.machineId, selected.agent!.id).catch((e) => ui.toast(errorMessage(e), "error")),
         }]
       : []),
-    ...(selected?.live ? [{ id: "terminal", label: "Open terminal", keywords: "shell", icon: <SquareTerminal size={15} />, run: () => ui.setPanelTab("terminal") }] : []),
+    ...(selected?.cwd ? [{ id: "terminal", label: "Open terminal", keywords: "shell", icon: <SquareTerminal size={15} />, run: () => ui.setPanelTab("terminal", "shell") }] : []),
+    ...(selected?.live ? [{ id: "agent-screen", label: "Show agent screen", keywords: "terminal pane", icon: <SquareTerminal size={15} />, run: () => ui.setPanelTab("terminal", "agent") }] : []),
     { id: "pair", label: "Add machine", keywords: "server pair", icon: <Server size={15} />, run: () => ui.openPair() },
     { id: "servers", label: "Servers", keywords: "machines", icon: <Server size={15} />, run: () => ui.setView("servers") },
     { id: "skills", label: "Skills", keywords: "skill library sync", icon: <Puzzle size={15} />, run: () => ui.setView("skills") },
