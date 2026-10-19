@@ -18,7 +18,7 @@ use huntaway_core::codex;
 use huntaway_core::transcript::{PendingTool, TranscriptTail};
 use huntaway_core::screen::{keys_for_choice, numbered_options, ScreenOption};
 use huntaway_core::{TimelineItem, ToolKind};
-pub use huntaway_api::{AgentView, Envelope, Interaction, MachineInfo, Notification, PendingToolView, SessionView, StoredItem, WorkspaceView};
+pub use huntaway_api::{AgentLaunch, AgentView, Envelope, Interaction, MachineInfo, Notification, PendingToolView, QueuedMessage, SessionView, StoredItem, WorkspaceView};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
@@ -47,6 +47,11 @@ const SCREEN_RETRY: Duration = Duration::from_millis(1500);
 const EVENT_SETTLE: Duration = Duration::from_millis(200);
 /// Blocking episodes kept for the metrics.
 const METRICS_EPISODES: usize = 10_000;
+/// Agent launches remembered per agent (parent detection).
+const LAUNCHES_KEPT: usize = 64;
+/// A message sent from Huntaway that never shows up in the transcript is
+/// dropped from `queued` after this long.
+const QUEUED_MAX_AGE_SECS: u64 = 15 * 60;
 
 fn is_busy(status: &str) -> bool {
     matches!(status, "working" | "blocked")
@@ -219,6 +224,10 @@ struct AgentEntry {
     last_request: Option<String>,
     /// Counts blocking prompts, to give prompts without a tool call an id.
     block_seq: u64,
+    /// Herdr agents this agent started or prompted, with the call timestamp.
+    launches: Vec<(String, AgentLaunch)>,
+    /// First message of the conversation (matches a parent's prompt).
+    first_request: Option<String>,
 }
 
 /// Usage metrics (PRD §22), in memory since the daemon started.
@@ -256,6 +265,8 @@ pub struct Engine {
     running_sessions: Mutex<HashSet<String>>,
     metrics: Mutex<Metrics>,
     started: Instant,
+    /// `huntawayd dispatch` links, reloaded when the file changes.
+    dispatched: Mutex<(Option<std::time::SystemTime>, HashMap<String, String>)>,
 }
 
 fn now_ms() -> u64 {
@@ -290,6 +301,7 @@ impl Engine {
             running_sessions: Mutex::new(HashSet::new()),
             metrics: Mutex::new(Metrics::default()),
             started: Instant::now(),
+            dispatched: Mutex::new((None, HashMap::new())),
         });
         (engine, notify_rx)
     }
@@ -585,9 +597,10 @@ impl Engine {
                 if replace {
                     to_create.push((id, info, label, tab_label, instance));
                 } else if let Some(entry) = state.agents.get_mut(&id) {
-                    let renamed = entry.view.workspace_label != label || entry.view.tab_label != tab_label;
+                    let renamed = entry.view.workspace_label != label || entry.view.tab_label != tab_label || entry.view.name != info.name;
                     entry.view.workspace_label = label;
                     entry.view.tab_label = tab_label;
+                    entry.view.name = info.name.clone();
                     if entry.tail.is_none() && info.agent_session.is_some() {
                         to_attach.push((id.clone(), info.clone()));
                     }
@@ -681,7 +694,7 @@ impl Engine {
             project,
             cwd: info.cwd.clone(),
             kind,
-            name: None,
+            name: info.name.clone(),
             herdr_status: status.clone(),
             attention: Attention::Unknown,
             summary: title_summary(&info),
@@ -695,6 +708,9 @@ impl Engine {
             usage: None,
             native_session: info.agent_session.as_ref().map(|s| s.value.clone()),
             warnings,
+            parent_id: None,
+            children: Vec::new(),
+            queued: Vec::new(),
         };
         let mut entry = AgentEntry {
             view,
@@ -723,6 +739,8 @@ impl Engine {
             seen_at_secs: now_ms() / 1000,
             last_request: None,
             block_seq: 0,
+            launches: Vec::new(),
+            first_request: None,
         };
         // Load history without notifications.
         self.apply_items(&mut entry, history, false);
@@ -863,10 +881,12 @@ impl Engine {
             })
             .collect();
 
+        let dispatched = self.dispatch_links();
         let mut emitted: Vec<(String, &'static str, Value)> = Vec::new();
         let mut notifications = Vec::new();
         let mut screens = Vec::new();
         let mut lookups = Vec::new();
+        let now_secs = now_ms() / 1000;
         {
             let mut state = self.state.lock().unwrap();
             for (id, entry) in state.agents.iter_mut() {
@@ -894,6 +914,7 @@ impl Engine {
                     }
                 }
                 recompute(entry);
+                entry.view.queued.retain(|q| now_secs.saturating_sub(q.at) < QUEUED_MAX_AGE_SECS);
 
                 // Notifications. A turn ending on a question is notified as
                 // a finished turn, not as a prompt on screen.
@@ -954,6 +975,12 @@ impl Engine {
                     emitted.push((id.clone(), "agent.updated", serde_json::to_value(&entry.view).unwrap()));
                 }
             }
+            for id in relink(&mut state.agents, &dispatched) {
+                if emitted.iter().any(|(e, k, _)| *e == id && *k == "agent.updated") {
+                    emitted.retain(|(e, k, _)| !(*e == id && *k == "agent.updated"));
+                }
+                emitted.push((id.clone(), "agent.updated", serde_json::to_value(&state.agents[&id].view).unwrap()));
+            }
         }
         for (id, kind, data) in emitted {
             self.emit(kind, Some(&id), data);
@@ -967,6 +994,17 @@ impl Engine {
         (screens, lookups)
     }
 
+    /// Links written by `huntawayd dispatch`, read again when the file changes.
+    fn dispatch_links(&self) -> HashMap<String, String> {
+        let path = crate::config::state_dir().join(crate::dispatch::LINKS_FILE);
+        let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let mut cache = self.dispatched.lock().unwrap();
+        if cache.0 != modified {
+            *cache = (modified, read_dispatch_links(&path));
+        }
+        cache.1.clone()
+    }
+
     /// Stores transcript items read for the entry. Returns them numbered.
     fn apply_items(&self, entry: &mut AgentEntry, items: Vec<TimelineItem>, live: bool) -> Vec<StoredItem> {
         let mut stored = Vec::with_capacity(items.len());
@@ -978,6 +1016,19 @@ impl Engine {
                     entry.interrupted_by_huntaway = false;
                     if !text.starts_with('/') {
                         entry.last_request = Some(first_line(text, 140));
+                        if entry.first_request.is_none() {
+                            entry.first_request = Some(normalize(text));
+                        }
+                    }
+                    let shown = normalize(text);
+                    if let Some(i) = entry.view.queued.iter().position(|q| same_message(&normalize(&q.text), &shown)) {
+                        entry.view.queued.remove(i);
+                    }
+                }
+                TimelineItem::ToolCall { agent: Some(launch), sidechain: false, timestamp, .. } => {
+                    entry.launches.push((timestamp.clone(), (**launch).clone()));
+                    if entry.launches.len() > LAUNCHES_KEPT {
+                        entry.launches.remove(0);
                     }
                 }
                 _ => {}
@@ -1024,6 +1075,16 @@ impl Engine {
             client.agent_send_keys(&pane, claude::CLEAR_INPUT_KEYS).await?;
         }
         client.agent_prompt(&pane, text).await?;
+        let view = {
+            let mut state = self.state.lock().unwrap();
+            state.agents.get_mut(id).filter(|e| e.tail.is_some()).map(|entry| {
+                entry.view.queued.push(QueuedMessage { text: text.to_string(), at: now_ms() / 1000 });
+                entry.view.clone()
+            })
+        };
+        if let Some(view) = view {
+            self.emit("agent.updated", Some(id), serde_json::to_value(view).unwrap());
+        }
         Ok(())
     }
 
@@ -1368,7 +1429,7 @@ fn instance_key(info: &AgentInfo) -> String {
 }
 
 /// Opens the transcript of an agent, in the format of its kind.
-fn locate_transcript(info: &AgentInfo) -> Option<TranscriptTail> {
+pub(crate) fn locate_transcript(info: &AgentInfo) -> Option<TranscriptTail> {
     let session = &info.agent_session.as_ref()?.value;
     match info.agent.as_deref()? {
         "claude" => claude::transcript_path(info.cwd.as_deref(), session).map(TranscriptTail::new),
@@ -1498,6 +1559,83 @@ fn summary(todo: Option<String>, recent: &[TimelineItem], last_request: Option<&
         })
     })
     .or_else(|| last_request.cloned())
+}
+
+/// Collapses whitespace, to compare messages typed and messages read back.
+fn normalize(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A message read back from the transcript matches the one sent. Agents
+/// may rewrite the end (attachments shown as `[Image #1]`), not the start.
+fn same_message(sent: &str, shown: &str) -> bool {
+    if sent == shown {
+        return true;
+    }
+    let prefix = |s: &str| s.chars().take(40).collect::<String>();
+    sent.chars().count() >= 12 && shown.chars().count() >= 12 && prefix(sent) == prefix(shown)
+}
+
+/// Links each agent to the agent that started it: from the launches read
+/// in transcripts (pane, then name, then first message), and from the
+/// links written by `huntawayd dispatch`. Returns the agents whose view changed.
+fn relink(agents: &mut BTreeMap<String, AgentEntry>, dispatched: &HashMap<String, String>) -> Vec<String> {
+    // child id → (launch timestamp, parent id); the newest launch wins.
+    let mut parent_of: HashMap<String, (String, String)> = HashMap::new();
+    for (pid, parent) in agents.iter() {
+        for (at, launch) in &parent.launches {
+            let child = agents.iter().find(|(cid, c)| {
+                *cid != pid
+                    && c.view.session == parent.view.session
+                    && (launch.pane_id.as_deref() == Some(c.view.pane_id.as_str())
+                        || (launch.name.is_some() && launch.name == c.view.name)
+                        || (launch.start
+                            && launch.prompt.as_deref().map(normalize).is_some_and(|p| {
+                                c.first_request.as_deref().is_some_and(|f| same_message(&p, f))
+                            })))
+            });
+            if let Some((cid, _)) = child {
+                if parent_of.get(cid).is_none_or(|(t, _)| at >= t) {
+                    parent_of.insert(cid.clone(), (at.clone(), pid.clone()));
+                }
+            }
+        }
+    }
+    for (child, parent) in dispatched {
+        if agents.contains_key(child) && agents.contains_key(parent) && child != parent {
+            parent_of.insert(child.clone(), (String::new(), parent.clone()));
+        }
+    }
+    // Two agents naming each other: keep neither link.
+    let cyclic: Vec<String> = parent_of
+        .iter()
+        .filter(|(c, (_, p))| parent_of.get(p.as_str()).is_some_and(|(_, pp)| pp == *c))
+        .map(|(c, _)| c.clone())
+        .collect();
+    for c in cyclic {
+        parent_of.remove(&c);
+    }
+    let mut children: HashMap<String, Vec<String>> = HashMap::new();
+    for (c, (_, p)) in &parent_of {
+        children.entry(p.clone()).or_default().push(c.clone());
+    }
+    let mut changed = Vec::new();
+    for (id, entry) in agents.iter_mut() {
+        let parent = parent_of.get(id).map(|(_, p)| p.clone());
+        let mut kids = children.remove(id).unwrap_or_default();
+        kids.sort();
+        if entry.view.parent_id != parent || entry.view.children != kids {
+            entry.view.parent_id = parent;
+            entry.view.children = kids;
+            changed.push(id.clone());
+        }
+    }
+    changed
+}
+
+/// Links written by `huntawayd dispatch`: child agent id → parent agent id.
+pub fn read_dispatch_links(path: &std::path::Path) -> HashMap<String, String> {
+    std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
 
 fn first_line(text: &str, max: usize) -> String {

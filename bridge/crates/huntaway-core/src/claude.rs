@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::model::{FileChange, Question, QuestionOption, TimelineItem, Todo, ToolKind, Usage};
+use crate::launch::agent_launch;
 use crate::transcript::LineParser;
 pub use crate::transcript::{PendingTool, TranscriptTail};
 
@@ -254,6 +255,12 @@ impl Parser {
                     }
                 }
                 Some("tool_use") => items.extend(self.tool_use(block, &uuid, &timestamp, sidechain)),
+                Some("thinking") => {
+                    let text = block["thinking"].as_str().unwrap_or_default().trim();
+                    if !text.is_empty() {
+                        items.push(TimelineItem::Thinking { timestamp: timestamp.clone(), text: text.to_string(), sidechain });
+                    }
+                }
                 _ => {}
             }
         }
@@ -264,8 +271,13 @@ impl Parser {
         let name = str_field(block, "name");
         let tool_use_id = str_field(block, "id");
         let input = &block["input"];
-        let kind = tool_kind(&name);
-        let summary = tool_summary(&name, input);
+        let mut kind = tool_kind(&name);
+        let mut summary = tool_summary(&name, input);
+        let agent = (kind == ToolKind::Command).then(|| input["command"].as_str().and_then(agent_launch)).flatten();
+        if let Some(launch) = &agent {
+            kind = ToolKind::Agent;
+            summary = launch_summary(launch);
+        }
 
         if !sidechain || self.subagent {
             self.pending_seq += 1;
@@ -291,6 +303,7 @@ impl Parser {
             summary,
             sidechain,
             change: file_change(&name, input),
+            agent: agent.map(Box::new),
         }];
         match kind {
             ToolKind::Todo => {
@@ -372,9 +385,18 @@ fn tool_summary(name: &str, input: &Value) -> String {
             let n = input["todos"].as_array().map_or(0, Vec::len);
             Some(format!("{n} task{}", if n == 1 { "" } else { "s" }))
         }
-        ToolKind::Other => pick(&["description", "command", "file_path", "url", "query"]),
+        ToolKind::Other | ToolKind::Agent => pick(&["description", "command", "file_path", "url", "query"]),
     };
     first_line(&summary.unwrap_or_default(), 120)
+}
+
+/// `reviewer: Review the diff…`, for an agent launch.
+pub fn launch_summary(launch: &crate::model::AgentLaunch) -> String {
+    let name = launch.name.as_deref().unwrap_or("agent");
+    match &launch.prompt {
+        Some(p) => first_line(&format!("{name}: {p}"), 120),
+        None => name.to_string(),
+    }
 }
 
 /// Max characters kept per side of a file change.

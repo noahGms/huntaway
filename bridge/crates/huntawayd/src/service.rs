@@ -86,6 +86,15 @@ pub fn install(start: bool) -> Result<()> {
     Ok(())
 }
 
+/// Restarts the installed service (it then runs the binary on disk).
+pub fn restart() -> Result<()> {
+    if cfg!(target_os = "macos") {
+        run(Command::new("launchctl").args(["kickstart", "-k", &format!("gui/{}/{LABEL}", uid())]))
+    } else {
+        run(Command::new("systemctl").args(["--user", "restart", "huntawayd.service"]))
+    }
+}
+
 pub fn uninstall() -> Result<()> {
     let path = unit_path();
     if cfg!(target_os = "macos") {

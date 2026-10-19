@@ -158,6 +158,9 @@ pub struct AgentInfo {
     pub cwd: Option<String>,
     pub foreground_cwd: Option<String>,
     pub terminal_title: Option<String>,
+    /// Name given with `herdr agent start <name>`.
+    #[serde(default)]
+    pub name: Option<String>,
     pub state_change_seq: Option<u64>,
     pub completion_seq: Option<u64>,
     #[serde(default)]
@@ -395,6 +398,18 @@ impl Client {
     /// Every pane of the session (or of one workspace), shells included.
     pub async fn pane_list(&self, workspace_id: Option<&str>) -> Result<Vec<PaneInfo>> {
         self.call_field("pane.list", json!({ "workspace_id": workspace_id }), "panes").await
+    }
+
+    /// Splits `target` (`right` or `down`) and returns the new pane id.
+    pub async fn pane_split(&self, target: &str, direction: &str, cwd: Option<&str>, env: &[(&str, &str)]) -> Result<String> {
+        let env: serde_json::Map<String, Value> = env.iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+        let result = self
+            .call("pane.split", json!({ "target_pane_id": target, "direction": direction, "cwd": cwd, "env": env, "focus": false }))
+            .await?;
+        result["pane"]["pane_id"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| Error::Unexpected("pane.split returned no pane".into()))
     }
 
     pub async fn pane_process_info(&self, pane_id: &str) -> Result<ProcessInfo> {

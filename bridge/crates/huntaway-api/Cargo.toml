@@ -12,4 +12,5 @@ ts = ["dep:ts-rs"]
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 ts-rs = { version = "10", optional = true, features = ["serde-json-impl", "no-serde-warnings"] }

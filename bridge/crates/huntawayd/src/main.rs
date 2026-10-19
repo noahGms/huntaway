@@ -6,6 +6,7 @@
 mod api;
 mod auth;
 mod config;
+mod dispatch;
 mod engine;
 mod files;
 mod history;
@@ -15,6 +16,8 @@ mod push;
 mod runner;
 mod scripts;
 mod service;
+mod skills;
+mod update;
 
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
@@ -68,6 +71,38 @@ enum Command {
     },
     /// Check Herdr sessions, agents and whether the daemon is reachable.
     Status,
+    /// Start another agent next to the calling one (from an agent's Herdr
+    /// pane), send it a task and optionally wait for its answer. Prints JSON.
+    Dispatch {
+        /// Task sent to the new agent.
+        task: Option<String>,
+        /// Role looked up in the `[routing]` table of the config (`review`, `ui`…).
+        #[arg(long)]
+        role: Option<String>,
+        /// Agent kind (`claude`, `codex`, `opencode`…), overrides the routing.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Herdr agent name (default: role or kind with a random suffix).
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        /// Working directory (default: the current one).
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Wait until the agent settles and print its last message.
+        #[arg(long)]
+        wait: bool,
+        /// With `--wait`, give up after this many seconds.
+        #[arg(long, default_value_t = 1800)]
+        timeout: u64,
+    },
+    /// Update huntawayd to the latest release and restart the service.
+    Update {
+        /// Only report whether an update is available.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -103,6 +138,11 @@ async fn main() -> Result<()> {
             }
         },
         Command::Status => status().await,
+        Command::Dispatch { task, role, kind, name, model, cwd, wait, timeout } => {
+            let config = Config::load()?;
+            dispatch::run(&config, dispatch::Dispatch { task, role, kind, name, model, cwd, wait, timeout_secs: timeout }).await
+        }
+        Command::Update { check } => update::cli(check).await,
     }
 }
 
@@ -111,6 +151,7 @@ async fn run() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "huntawayd=info".into()))
         .init();
 
+    update::startup_check();
     let config = Config::load()?;
     let dir = state_dir();
     let identity = Identity::load_or_create(&dir)?;
@@ -129,7 +170,7 @@ async fn run() -> Result<()> {
         warn!(error = %e, "local token not created: the desktop app will need pairing");
     }
     let listeners = Arc::new(listen::Listeners::default());
-    let state = Arc::new(api::AppState { engine, store, identity, history: Default::default(), presence, listeners: listeners.clone(), runner });
+    let state = Arc::new(api::AppState { engine, store, identity, history: Default::default(), presence, listeners: listeners.clone(), runner, skills: Arc::new(skills::Skills::new()) });
     let app = api::router(state).into_make_service_with_connect_info::<SocketAddr>();
     listen::run(listeners, listen_config, app).await
 }

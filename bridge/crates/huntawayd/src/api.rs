@@ -29,6 +29,7 @@ pub struct AppState {
     pub presence: Arc<crate::presence::Presence>,
     pub listeners: Arc<crate::listen::Listeners>,
     pub runner: Arc<crate::runner::Runner>,
+    pub skills: Arc<crate::skills::Skills>,
 }
 
 type Shared = Arc<AppState>;
@@ -70,6 +71,12 @@ pub fn router(state: Shared) -> Router {
         .route("/v1/shells", get(list_shells).post(open_shell))
         .route("/v1/shells/close", post(close_shell))
         .route("/v1/panes/{pane}/terminal", get(pane_terminal))
+        .route("/v1/skills", get(list_skills))
+        .route(
+            "/v1/skills/{name}",
+            axum::routing::put(put_skill).delete(delete_skill).layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
+        )
+        .route("/v1/daemon/update", get(check_update).post(run_update))
         .route("/v1/stream", get(stream))
         .with_state(state)
 }
@@ -184,7 +191,7 @@ async fn pair(State(state): State<Shared>, Json(req): Json<PairRequest>) -> ApiR
     Ok(Json(json!({
         "device_id": device.id,
         "token": token,
-        "permissions": device.permissions,
+        "permissions": device.effective_permissions(),
         "machine_id": machine.machine_id,
         "machine_name": machine.machine_name,
         "public_key": state.identity.public_key_b64(),
@@ -199,7 +206,7 @@ async fn machine(State(state): State<Shared>, auth: Auth) -> ApiResult<Json<Valu
     Ok(Json(json!({
         "machine": state.engine.machine,
         "seq": state.engine.current_seq(),
-        "device": { "id": auth.0.id, "name": auth.0.name, "permissions": auth.0.permissions },
+        "device": { "id": auth.0.id, "name": auth.0.name, "permissions": auth.0.effective_permissions() },
         "uptime_secs": state.engine.uptime_secs(),
         "sessions": state.engine.sessions(),
         "addresses": state.listeners.addresses(),
@@ -550,6 +557,50 @@ async fn presence(State(state): State<Shared>, auth: Auth, Json(body): Json<Pres
 #[derive(Deserialize)]
 struct PathQuery {
     path: String,
+}
+
+async fn list_skills(State(state): State<Shared>, auth: Auth) -> ApiResult<Json<huntaway_api::SkillsResponse>> {
+    auth.require("skills.read")?;
+    let skills = state.skills.clone();
+    let skills = tokio::task::spawn_blocking(move || skills.list()).await.map_err(|e| anyhow::anyhow!(e))?;
+    Ok(Json(huntaway_api::SkillsResponse { skills }))
+}
+
+async fn put_skill(State(state): State<Shared>, auth: Auth, Path(name): Path<String>, Json(b): Json<huntaway_api::SkillPut>) -> ApiResult<Json<Value>> {
+    auth.require("skills.edit")?;
+    let skills = state.skills.clone();
+    let view = tokio::task::spawn_blocking(move || skills.put(&name, &b.files)).await.map_err(|e| anyhow::anyhow!(e))??;
+    state.engine.emit("skills.updated", None, json!({}));
+    Ok(Json(json!({ "ok": true, "skill": view })))
+}
+
+async fn delete_skill(State(state): State<Shared>, auth: Auth, Path(name): Path<String>) -> ApiResult<Json<Value>> {
+    auth.require("skills.edit")?;
+    let skills = state.skills.clone();
+    tokio::task::spawn_blocking(move || skills.delete(&name)).await.map_err(|e| anyhow::anyhow!(e))??;
+    state.engine.emit("skills.updated", None, json!({}));
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn check_update(_auth: Auth) -> ApiResult<Json<huntaway_api::DaemonUpdateCheck>> {
+    let c = crate::update::check().await.map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, "update_check_failed", e.to_string()))?;
+    Ok(Json(c))
+}
+
+/// Installs the latest release, answers, then restarts in place.
+async fn run_update(State(state): State<Shared>, auth: Auth) -> ApiResult<Json<Value>> {
+    auth.require("daemon.update")?;
+    let c = crate::update::check().await.map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, "update_check_failed", e.to_string()))?;
+    if !c.available {
+        return Err(ApiError::new(StatusCode::CONFLICT, "up_to_date", format!("huntawayd {} is up to date", c.current)));
+    }
+    crate::update::install(&c.latest).await.map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, "update_failed", e.to_string()))?;
+    state.engine.emit("daemon.restarting", None, json!({ "from": c.current, "to": c.latest }));
+    tokio::spawn(async {
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        crate::update::restart_in_place();
+    });
+    Ok(Json(json!({ "ok": true, "from": c.current, "to": c.latest })))
 }
 
 async fn list_scripts(State(state): State<Shared>, auth: Auth, Query(q): Query<PathQuery>) -> ApiResult<Json<Value>> {

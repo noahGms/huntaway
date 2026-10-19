@@ -1,9 +1,11 @@
 // API types generated from Rust (`npm run bindings`), plus the types of the
 // Tauri backend (`src-tauri/src`).
 
+export type * from "./generated/AgentLaunch";
 export type * from "./generated/AgentView";
 export type * from "./generated/Attention";
 export type * from "./generated/BlockedReason";
+export type * from "./generated/DaemonUpdateCheck";
 export type * from "./generated/Envelope";
 export type * from "./generated/FileChange";
 export type * from "./generated/FileMatch";
@@ -20,12 +22,18 @@ export type * from "./generated/ProjectScripts";
 export type * from "./generated/ProjectShells";
 export type * from "./generated/Question";
 export type * from "./generated/QuestionOption";
+export type * from "./generated/QueuedMessage";
 export type * from "./generated/RateLimits";
 export type * from "./generated/RateWindow";
 export type * from "./generated/ScreenOption";
 export type * from "./generated/ScriptSuggestion";
 export type * from "./generated/ScriptView";
 export type * from "./generated/SessionView";
+export type * from "./generated/SkillFile";
+export type * from "./generated/SkillLink";
+export type * from "./generated/SkillPut";
+export type * from "./generated/SkillView";
+export type * from "./generated/SkillsResponse";
 export type * from "./generated/ShellView";
 export type * from "./generated/StateSnapshot";
 export type * from "./generated/StoredItem";

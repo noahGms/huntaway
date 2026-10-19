@@ -27,6 +27,9 @@ pub const ALL_PERMISSIONS: &[&str] = &[
     "scripts.run",
     "scripts.edit",
     "terminal.open",
+    "skills.read",
+    "skills.edit",
+    "daemon.update",
 ];
 
 // ------------------------------------------------------------------ timeline
@@ -44,6 +47,8 @@ pub enum ToolKind {
     Plan,
     Subagent,
     Web,
+    /// Starts or prompts another Herdr agent (`herdr agent start/prompt`, `huntawayd dispatch`).
+    Agent,
     #[serde(other)]
     Other,
 }
@@ -69,6 +74,23 @@ pub struct Question {
     pub question: String,
     pub options: Vec<QuestionOption>,
     pub multi_select: bool,
+}
+
+/// Herdr agent started or prompted by a command of the agent (see
+/// [`ToolKind::Agent`]). Fields are what the command line names.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct AgentLaunch {
+    /// Herdr agent name (`herdr agent start <name>`).
+    pub name: Option<String>,
+    /// Pane the agent was started in (`--pane`).
+    pub pane_id: Option<String>,
+    /// Agent kind (`--kind codex`).
+    pub kind: Option<String>,
+    /// Task sent to it (`herdr agent prompt <name> "…"`).
+    pub prompt: Option<String>,
+    /// Whether the command starts the agent (else it only prompts one).
+    pub start: bool,
 }
 
 /// File change carried by an edit tool call, for the diff preview.
@@ -110,6 +132,15 @@ pub enum TimelineItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         change: Option<FileChange>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        agent: Option<Box<AgentLaunch>>,
+    },
+    /// Reasoning the agent shows (Claude thinking, Codex reasoning summary).
+    Thinking {
+        timestamp: String,
+        text: String,
+        sidechain: bool,
     },
     ToolResult {
         timestamp: String,
@@ -152,6 +183,7 @@ impl TimelineItem {
             TimelineItem::UserMessage { timestamp, .. }
             | TimelineItem::AssistantMessage { timestamp, .. }
             | TimelineItem::ToolCall { timestamp, .. }
+            | TimelineItem::Thinking { timestamp, .. }
             | TimelineItem::ToolResult { timestamp, .. }
             | TimelineItem::TodosUpdated { timestamp, .. }
             | TimelineItem::QuestionAsked { timestamp, .. }
@@ -364,6 +396,24 @@ pub struct AgentView {
     #[serde(default)]
     pub native_session: Option<String>,
     pub warnings: Vec<String>,
+    /// Agent that started this one (same machine), when known.
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// Live agents this one started.
+    #[serde(default)]
+    pub children: Vec<String>,
+    /// Messages sent from Huntaway that the transcript does not show yet
+    /// (the agent was busy, or has not written them yet), oldest first.
+    #[serde(default)]
+    pub queued: Vec<QueuedMessage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct QueuedMessage {
+    pub text: String,
+    /// Seconds since the epoch.
+    pub at: u64,
 }
 
 // ------------------------------------------------------------------- machine
@@ -560,6 +610,99 @@ pub struct GitStatus {
 pub struct UploadResponse {
     /// Absolute path on the machine, to put in a message.
     pub path: String,
+}
+
+// ------------------------------------------------------------------- skills
+
+/// One file of a skill folder; `content` is base64.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SkillFile {
+    /// Relative path inside the skill folder, `/`-separated (`SKILL.md`, `scripts/run.sh`).
+    pub path: String,
+    pub content: String,
+}
+
+/// `PUT /v1/skills/{name}`: the whole folder, replacing the previous one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SkillPut {
+    pub files: Vec<SkillFile>,
+}
+
+/// Where a skill is linked for one agent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SkillLink {
+    /// `claude`, `codex`…
+    pub agent: String,
+    pub path: String,
+    /// `linked`, or `conflict` when a skill of the same name not installed
+    /// by Huntaway is already there (left untouched).
+    pub state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SkillView {
+    pub name: String,
+    /// `description` of the `SKILL.md` front matter.
+    pub description: Option<String>,
+    /// [`skill_hash`] of the files: equal hashes, same skill.
+    pub hash: String,
+    pub files: u32,
+    pub links: Vec<SkillLink>,
+    /// Seconds since the epoch.
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SkillsResponse {
+    pub skills: Vec<SkillView>,
+}
+
+/// Content hash of a skill folder, independent of file order:
+/// sha256 of `path\n<sha256 of content>\n` for each file sorted by path.
+pub fn skill_hash<'a>(files: impl IntoIterator<Item = (&'a str, &'a [u8])>) -> String {
+    use sha2::{Digest, Sha256};
+    let mut files: Vec<(&str, &[u8])> = files.into_iter().collect();
+    files.sort_by(|a, b| a.0.cmp(b.0));
+    let mut outer = Sha256::new();
+    for (path, content) in files {
+        outer.update(path.as_bytes());
+        outer.update(b"\n");
+        outer.update(format!("{:x}", Sha256::digest(content)).as_bytes());
+        outer.update(b"\n");
+    }
+    format!("{:x}", outer.finalize())
+}
+
+/// `description:` of a `SKILL.md` front matter.
+pub fn skill_description(skill_md: &str) -> Option<String> {
+    let body = skill_md.strip_prefix("---")?;
+    let end = body.find("\n---")?;
+    body[..end].lines().find_map(|l| {
+        let v = l.strip_prefix("description:")?.trim().trim_matches('"').trim_matches('\'');
+        (!v.is_empty()).then(|| v.to_string())
+    })
+}
+
+/// Valid skill folder name: `[a-z0-9][a-z0-9._-]{0,63}`.
+pub fn valid_skill_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+}
+
+/// `GET /v1/daemon/update`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct DaemonUpdateCheck {
+    pub current: String,
+    pub latest: String,
+    pub available: bool,
 }
 
 // ------------------------------------------------------------------ scripts

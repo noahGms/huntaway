@@ -39,10 +39,11 @@ pub const DEFAULT_PERMISSIONS: &[&str] = &[
     "files.read",
     "scripts.read",
     "scripts.run",
+    "skills.read",
 ];
 
 /// Observer device: sees everything, acts on nothing (`huntawayd pair --read-only`).
-pub const READ_ONLY_PERMISSIONS: &[&str] = &["projects.read", "agents.read", "terminal.read", "history.read", "scripts.read"];
+pub const READ_ONLY_PERMISSIONS: &[&str] = &["projects.read", "agents.read", "terminal.read", "history.read", "scripts.read", "skills.read"];
 
 /// Name of the device created for desktop apps on this machine.
 pub const LOCAL_DEVICE_NAME: &str = "Desktop local";
@@ -152,7 +153,29 @@ pub struct Device {
 
 impl Device {
     pub fn can(&self, permission: &str) -> bool {
-        self.permissions.iter().any(|p| p == permission)
+        self.effective_permissions().iter().any(|p| p == permission)
+    }
+
+    /// Stored permissions plus those added after the device was paired:
+    /// `skills.read` with `scripts.read`, and `skills.edit` and
+    /// `daemon.update` for devices paired with `--full`.
+    pub fn effective_permissions(&self) -> Vec<String> {
+        let mut all = self.permissions.clone();
+        let has = |p: &str| self.permissions.iter().any(|x| x == p);
+        let mut add = |p: &str| {
+            if !all.iter().any(|x| x == p) {
+                all.push(p.to_string());
+            }
+        };
+        if has("scripts.read") {
+            add("skills.read");
+        }
+        if has("scripts.edit") && has("terminal.open") && has("agents.input") {
+            add("skills.read");
+            add("skills.edit");
+            add("daemon.update");
+        }
+        all
     }
 }
 

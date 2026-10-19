@@ -23,6 +23,9 @@ pub struct Config {
     pub items_per_agent: usize,
     /// Events kept for reconnection replay.
     pub journal_size: usize,
+    /// `huntawayd dispatch`: agent kind per role (`review = "codex"`), with
+    /// an optional `default`.
+    pub routing: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Config {
@@ -34,6 +37,7 @@ impl Default for Config {
             lan: false,
             items_per_agent: 1000,
             journal_size: 20_000,
+            routing: Default::default(),
         }
     }
 }

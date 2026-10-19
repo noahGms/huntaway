@@ -250,6 +250,21 @@ impl LineParser for Parser {
                 items
             }
             (Some("response_item"), Some("function_call" | "custom_tool_call")) => self.tool_call(p, uuid, timestamp),
+            (Some("response_item"), Some("reasoning")) => {
+                let text = p["summary"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|s| s["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                let text = text.trim();
+                if text.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![TimelineItem::Thinking { timestamp, text: text.to_string(), sidechain: false }]
+                }
+            }
             (Some("response_item"), Some("function_call_output" | "custom_tool_call_output")) => {
                 let call_id = p["call_id"].as_str().unwrap_or_default().to_string();
                 self.pending.retain(|_, t| t.tool_use_id != call_id);
@@ -347,7 +362,21 @@ impl Parser {
             "web_search" => (ToolKind::Web, input["query"].as_str().unwrap_or_default().to_string(), None),
             _ => (ToolKind::Other, name.clone(), None),
         };
-        let summary: String = summary.lines().next().unwrap_or_default().chars().take(120).collect();
+        let mut kind = kind;
+        let mut summary: String = summary.lines().next().unwrap_or_default().chars().take(120).collect();
+        let agent = if kind == ToolKind::Command {
+            let full = match name.as_str() {
+                "exec" => embedded_cmd(raw).unwrap_or_default(),
+                _ => command_of(&input),
+            };
+            crate::launch::agent_launch(&full)
+        } else {
+            None
+        };
+        if let Some(launch) = &agent {
+            kind = ToolKind::Agent;
+            summary = crate::claude::launch_summary(launch);
+        }
 
         self.pending_seq += 1;
         self.pending.insert(
@@ -361,7 +390,7 @@ impl Parser {
                 timestamp: timestamp.clone(),
             },
         );
-        vec![TimelineItem::ToolCall { uuid, timestamp, tool_use_id: call_id, name, kind, summary, sidechain: false, change }]
+        vec![TimelineItem::ToolCall { uuid, timestamp, tool_use_id: call_id, name, kind, summary, sidechain: false, change, agent: agent.map(Box::new) }]
     }
 }
 

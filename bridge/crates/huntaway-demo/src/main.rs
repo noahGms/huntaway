@@ -587,12 +587,14 @@ fn render(item: &TimelineItem) {
                 ToolKind::FileModified => "Modified",
                 ToolKind::Command => "Run",
                 ToolKind::Plan => "Plan",
-                ToolKind::Subagent => "Agent",
+                ToolKind::Subagent | ToolKind::Agent => "Agent",
                 ToolKind::Web => "Web",
                 _ => name.as_str(),
             };
             println!("  {} {}", dim(&format!("· {verb:<8}")), truncate(summary, 100));
         }
+        TimelineItem::Thinking { sidechain: false, text, .. } => println!("  {} {}", dim("· Thinking"), dim(&truncate(text, 100))),
+        TimelineItem::Thinking { .. } => {}
         TimelineItem::ToolResult { rejected: true, .. } => println!("  {}", yellow("✗ Denied")),
         TimelineItem::ToolResult { is_error: true, summary, .. } => {
             println!("  {} {}", red("✗"), dim(&truncate(summary, 100)));
