@@ -1,5 +1,9 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
 
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../api.dart';
 import '../keepalive.dart';
 import '../notifications.dart';
 import '../sync.dart';
@@ -100,7 +104,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(children: [
         const _Header('Machines'),
-        for (final c in model.connections)
+        for (final c in model.connections) ...[
           ListTile(
             leading: Icon(Icons.computer,
                 color: c.status == ConnectionStatus.online ? HuntawayColors.done : HuntawayColors.faint),
@@ -113,6 +117,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ConnectionStatus.offline => 'offline${c.lastError != null ? ' · ${c.lastError}' : ''}',
                 },
                 c.client.address ?? c.machine.addresses.first,
+                if (c.bridgeVersion != null) 'huntawayd ${c.bridgeVersion}',
               ].join(' · '),
               style: const TextStyle(color: HuntawayColors.muted, fontSize: 12.5),
             ),
@@ -137,6 +142,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               },
             ),
           ),
+          _DaemonUpdateTile(c, key: ValueKey('update-${c.machine.machineId}')),
+        ],
         ListTile(
           leading: const Icon(Icons.add),
           title: const Text('Add a machine'),
@@ -244,4 +251,194 @@ class _Header extends StatelessWidget {
         child: Text(title.toUpperCase(),
             style: const TextStyle(color: HuntawayColors.muted, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.8)),
       );
+}
+
+const _installCommand = 'curl -fsSL https://github.com/noahGms/huntaway/releases/latest/download/install.sh | sh';
+
+enum _UpdatePhase { idle, installing, restarting, done, failed }
+
+/// "Update huntawayd to X" under a machine when a newer release exists.
+/// Without the `daemon.update` permission, shows the command to run on the
+/// machine instead. The daemon restarts in place: the connection drops,
+/// and the update is done once it comes back on the new version.
+class _DaemonUpdateTile extends StatefulWidget {
+  const _DaemonUpdateTile(this.connection, {super.key});
+  final MachineConnection connection;
+
+  @override
+  State<_DaemonUpdateTile> createState() => _DaemonUpdateTileState();
+}
+
+class _DaemonUpdateTileState extends State<_DaemonUpdateTile> {
+  static const _restartTimeout = Duration(minutes: 2);
+
+  /// `GET /v1/daemon/update`; null until checked (or on older daemons).
+  Map<String, dynamic>? _check;
+  bool _checking = false;
+  _UpdatePhase _phase = _UpdatePhase.idle;
+  String? _target;
+  String? _error;
+  Timer? _poll;
+  DateTime? _restartedAt;
+
+  MachineConnection get _c => widget.connection;
+
+  @override
+  void initState() {
+    super.initState();
+    _c.addListener(_onConnection);
+    _fetch();
+  }
+
+  @override
+  void dispose() {
+    _c.removeListener(_onConnection);
+    _poll?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _fetch() async {
+    if (_checking || _c.status != ConnectionStatus.online) return;
+    _checking = true;
+    try {
+      final check = await _c.client.daemonUpdate();
+      if (mounted) setState(() => _check = check);
+    } catch (_) {
+      // Older daemon or no network: show nothing.
+    } finally {
+      _checking = false;
+    }
+  }
+
+  void _onConnection() {
+    if (!mounted) return;
+    if (_check == null && _phase == _UpdatePhase.idle) _fetch();
+    if (_phase == _UpdatePhase.restarting &&
+        _c.status == ConnectionStatus.online &&
+        _target != null &&
+        _c.bridgeVersion == _target) {
+      _poll?.cancel();
+      setState(() {
+        _phase = _UpdatePhase.done;
+        _check = {..._check ?? const {}, 'current': _target, 'available': false};
+      });
+    }
+  }
+
+  Future<void> _update() async {
+    final latest = _check?['latest'] as String?;
+    setState(() {
+      _phase = _UpdatePhase.installing;
+      _target = latest;
+      _error = null;
+    });
+    try {
+      final to = await _c.client.updateDaemon();
+      if (to.isNotEmpty) _target = to;
+    } on BridgeException catch (e) {
+      if (e.code == 'up_to_date') {
+        if (!mounted) return;
+        setState(() => _phase = _UpdatePhase.idle);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('huntawayd is already up to date')));
+        _check = null;
+        unawaited(_fetch());
+        return;
+      }
+      // The answer may be lost as the daemon restarts: wait for it anyway.
+      if (e.code != 'network' && e.code != 'timeout') {
+        if (mounted) {
+          setState(() {
+            _phase = _UpdatePhase.failed;
+            _error = errorMessage(e);
+          });
+        }
+        return;
+      }
+    }
+    if (!mounted) return;
+    setState(() => _phase = _UpdatePhase.restarting);
+    _restartedAt = DateTime.now();
+    // Reconnect quickly instead of waiting for the backoff.
+    _poll = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (DateTime.now().difference(_restartedAt!) > _restartTimeout) {
+        _poll?.cancel();
+        if (mounted) {
+          setState(() {
+            _phase = _UpdatePhase.failed;
+            _error = 'huntawayd did not come back on ${_target ?? 'the new version'}. Check the machine.';
+          });
+        }
+        return;
+      }
+      _c.reconnect();
+      _onConnection();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const muted = TextStyle(color: HuntawayColors.muted, fontSize: 12.5);
+    final check = _check;
+    switch (_phase) {
+      case _UpdatePhase.installing || _UpdatePhase.restarting:
+        return ListTile(
+          contentPadding: const EdgeInsets.only(left: 32, right: 16),
+          leading: const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+          title: Text(_phase == _UpdatePhase.installing
+              ? 'Installing huntawayd ${_target ?? ''}…'
+              : 'Restarting huntawayd…'),
+          subtitle: Text(
+              _phase == _UpdatePhase.installing
+                  ? 'Downloading the release on the machine'
+                  : 'Waiting for the machine to come back on ${_target ?? 'the new version'}',
+              style: muted),
+        );
+      case _UpdatePhase.done:
+        return ListTile(
+          contentPadding: const EdgeInsets.only(left: 32, right: 16),
+          leading: const Icon(Icons.check_circle_outline, color: HuntawayColors.done),
+          title: Text('huntawayd ${_c.bridgeVersion ?? _target ?? ''} is running'),
+        );
+      case _UpdatePhase.failed:
+        return ListTile(
+          contentPadding: const EdgeInsets.only(left: 32, right: 16),
+          leading: const Icon(Icons.error_outline, color: HuntawayColors.error),
+          title: const Text('Update failed'),
+          subtitle: Text(_error ?? '', style: const TextStyle(color: HuntawayColors.error, fontSize: 12.5)),
+          trailing: TextButton(onPressed: _update, child: const Text('Retry')),
+        );
+      case _UpdatePhase.idle:
+        break;
+    }
+    if (check == null || check['available'] != true) return const SizedBox.shrink();
+    final latest = check['latest'] as String? ?? '';
+    final current = check['current'] as String? ?? _c.bridgeVersion ?? '?';
+    if (!_c.machine.can('daemon.update')) {
+      return ListTile(
+        contentPadding: const EdgeInsets.only(left: 32, right: 4),
+        title: Text('huntawayd $latest is available'),
+        subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Installed: $current. Run on the machine:', style: muted),
+          const SizedBox(height: 4),
+          SelectableText(_installCommand, style: mono.copyWith(fontSize: 11.5)),
+        ]),
+        trailing: IconButton(
+          tooltip: 'Copy the command',
+          icon: const Icon(Icons.copy_rounded, size: 18),
+          onPressed: () {
+            Clipboard.setData(const ClipboardData(text: _installCommand));
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Command copied')));
+          },
+        ),
+      );
+    }
+    return ListTile(
+      contentPadding: const EdgeInsets.only(left: 32, right: 16),
+      leading: const Icon(Icons.system_update_outlined, color: HuntawayColors.accent),
+      title: Text('Update huntawayd to $latest'),
+      subtitle: Text('Installed: $current · the machine reconnects after a restart', style: muted),
+      onTap: _c.status == ConnectionStatus.online ? _update : null,
+    );
+  }
 }

@@ -96,31 +96,33 @@ void main() {
     expect(blockedY, lessThan(doneY));
   });
 
-  testWidgets('Agent screen shows conversation, grouped activity and approval card', (tester) async {
+  testWidgets('Agent screen shows the turn, its folded work and the approval card', (tester) async {
     final (model, _) = fixture();
     await tester.pumpWidget(host(model, const AgentScreen(machineId: 'm1', agentId: 'default:w1:p1')));
     await tester.pump();
     expect(find.text('Refactor authentication and add tests.'), findsOneWidget);
-    expect(find.text('1 read · 1 edit · npm run migrate'), findsOneWidget);
+    expect(find.text('Worked · 1 file read · 1 command · 1 file changed'), findsOneWidget);
+    // The files changed by the turn, after it.
+    expect(find.text('session.ts'), findsOneWidget);
     expect(find.text('Claude asks for permission'), findsOneWidget);
     expect(find.text('Approve'), findsOneWidget);
     expect(find.text('Deny'), findsOneWidget);
     expect(find.text("Yes, and don't ask again for npm"), findsOneWidget);
     expect(find.widgetWithText(TextField, 'Deny and explain…'), findsOneWidget);
-    // Expanding the activity lists each tool call.
-    await tester.tap(find.text('1 read · 1 edit · npm run migrate'));
+    // Expanding the work lists each tool call.
+    await tester.tap(find.text('Worked · 1 file read · 1 command · 1 file changed'));
     await tester.pump();
     expect(find.text('Edited'), findsOneWidget);
     // Tapping the modified file opens its diff.
     await tester.tap(find.text('Edited'));
     await tester.pump(const Duration(milliseconds: 600)); // status dots pulse forever
-    expect(find.text('session.ts'), findsOneWidget);
+    expect(find.text('session.ts'), findsNWidgets(2));
     expect(find.text('- const token = localStorage.get()'), findsOneWidget);
     expect(find.text('+ const token = await secureStorage.get()'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('Working agent shows the live line and a stop button', (tester) async {
+  testWidgets('Working agent shows the live work row and a stop button', (tester) async {
     final (model, c) = fixture();
     c.timeline('default:w2:p1')
       ..loaded = true
@@ -144,5 +146,69 @@ void main() {
     await tester.enterText(find.byType(TextField), 'zzz');
     await tester.pump();
     expect(find.textContaining('No agent matches'), findsOneWidget);
+  });
+
+  testWidgets('Queued messages show at the end until the transcript has them', (tester) async {
+    final (model, c) = fixture();
+    c.timeline('default:w2:p1').loaded = true;
+    c.agents['default:w2:p1'] = Agent.fromJson('m1', {
+      ...agentJson('default:w2:p1', {'status': 'working'}),
+      'queued': [
+        {'text': 'Also update the README', 'at': 1791403200},
+      ],
+    });
+    await tester.pumpWidget(host(model, const AgentScreen(machineId: 'm1', agentId: 'default:w2:p1')));
+    await tester.pump();
+    expect(find.text('Also update the README'), findsOneWidget);
+    expect(find.text('Waiting — will be sent when the agent is free'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Child agents nest under their parent, with a launch card and a breadcrumb', (tester) async {
+    final (model, c) = fixture();
+    c.agents['default:w2:p1'] = Agent.fromJson('m1', {
+      ...agentJson('default:w2:p1', {'status': 'working'}, summary: 'Tests offline'),
+      'children': ['default:w2:p2'],
+    });
+    c.agents['default:w2:p2'] = Agent.fromJson('m1', {
+      ...agentJson('default:w2:p2', {'status': 'blocked', 'reason': 'approval'}, summary: 'Write the docs'),
+      'name': 'docs',
+      'parent_id': 'default:w2:p1',
+    });
+    c.timeline('default:w2:p1')
+      ..loaded = true
+      ..merge([
+        item(0, 'user_message', {'text': 'Split the work'}),
+        item(1, 'tool_call', {
+          'kind': 'agent',
+          'summary': 'herdr agent start docs',
+          'tool_use_id': 'x',
+          'agent': {'name': 'docs', 'pane_id': 'w2:p2', 'kind': 'codex', 'prompt': 'Write the docs', 'start': true},
+        }),
+        item(2, 'turn_ended'),
+      ]);
+    c.timeline('default:w2:p2').loaded = true;
+    await tester.pumpWidget(host(model, const InboxScreen()));
+    // The parent goes to "Needs you" with its blocked child under it.
+    expect(find.text('WORKING'), findsNothing);
+    expect(find.text('1 agent'), findsOneWidget);
+    final parentY = tester.getTopLeft(find.text('Tests offline')).dy;
+    final childY = tester.getTopLeft(find.text('Write the docs')).dy;
+    expect(parentY, lessThan(childY));
+    // Indented under it.
+    expect(tester.getTopLeft(find.byType(BlockedCard).last).dx,
+        greaterThan(tester.getTopLeft(find.ancestor(of: find.text('Tests offline'), matching: find.byType(Card))).dx));
+
+    await tester.tap(find.text('Tests offline'));
+    await tester.pump(const Duration(milliseconds: 600)); // status dots pulse forever
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(find.text('Agent started'), findsOneWidget);
+    expect(find.text('Waiting for your approval: Bash'), findsNothing);
+    expect(find.text('Waiting for your answer'), findsOneWidget);
+    await tester.tap(find.text('Agent started'));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(find.text('  ›  '), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
   });
 }

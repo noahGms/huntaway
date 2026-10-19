@@ -27,7 +27,9 @@ class PairedMachine {
   final String token;
   final String deviceId;
   final String fingerprint;
-  final List<String> permissions;
+
+  /// Refreshed from the bridge: permissions may be granted after pairing.
+  List<String> permissions;
 
   bool can(String permission) => permissions.contains(permission);
 
@@ -204,6 +206,10 @@ class Agent {
     required this.hasTranscript,
     required this.itemCount,
     required this.warnings,
+    this.name,
+    this.parentId,
+    this.children = const [],
+    this.queued = const [],
   });
 
   final String machineId;
@@ -226,6 +232,18 @@ class Agent {
   final bool hasTranscript;
   final int itemCount;
   final List<String> warnings;
+
+  /// Herdr agent name, when it was started with one.
+  final String? name;
+
+  /// Agent that started this one (same machine), when known.
+  final String? parentId;
+
+  /// Live agents this one started.
+  final List<String> children;
+
+  /// Messages sent from Huntaway that the transcript does not show yet.
+  final List<QueuedMessage> queued;
 
   /// Unique across machines.
   String get key => '$machineId/$id';
@@ -254,8 +272,53 @@ class Agent {
         hasTranscript: (j['has_transcript'] as bool?) ?? false,
         itemCount: (j['item_count'] as int?) ?? 0,
         warnings: ((j['warnings'] as List?) ?? const []).cast<String>(),
+        name: j['name'] as String?,
+        parentId: j['parent_id'] as String?,
+        children: ((j['children'] as List?) ?? const []).cast<String>(),
+        queued: [
+          for (final q in (j['queued'] as List?) ?? const [])
+            QueuedMessage.fromJson((q as Map).cast<String, dynamic>())
+        ],
       );
 }
+
+/// Message sent from Huntaway, not in the transcript yet.
+class QueuedMessage {
+  QueuedMessage(this.text, this.at);
+  final String text;
+  final DateTime at;
+
+  factory QueuedMessage.fromJson(Map<String, dynamic> j) => QueuedMessage(
+        j['text'] as String? ?? '',
+        DateTime.fromMillisecondsSinceEpoch(((j['at'] as num?) ?? 0).toInt() * 1000),
+      );
+}
+
+/// Herdr agent started or prompted by a command of the agent (tool kind
+/// `agent`). Fields are what the command line names.
+class AgentLaunch {
+  AgentLaunch({this.name, this.paneId, this.kind, this.prompt, this.start = false});
+  final String? name;
+  final String? paneId;
+  final String? kind;
+  final String? prompt;
+
+  /// The command starts the agent (else it only prompts one).
+  final bool start;
+
+  factory AgentLaunch.fromJson(Map<String, dynamic> j) => AgentLaunch(
+        name: j['name'] as String?,
+        paneId: j['pane_id'] as String?,
+        kind: j['kind'] as String?,
+        prompt: j['prompt'] as String?,
+        start: (j['start'] as bool?) ?? false,
+      );
+}
+
+/// Tool kinds this app knows; newer ones read as `other`.
+const toolKinds = {
+  'file_read', 'search', 'file_modified', 'command', 'todo', 'question', 'plan', 'subagent', 'web', 'agent', 'other',
+};
 
 /// One conversation/activity entry. Kept as a map: the set of types grows.
 class TimelineItem {
@@ -269,15 +332,27 @@ class TimelineItem {
 
   String get text => data['text'] as String? ?? '';
   String get summary => data['summary'] as String? ?? '';
-  String get kind => data['kind'] as String? ?? 'other';
+  String get kind {
+    final k = data['kind'] as String?;
+    return toolKinds.contains(k) ? k! : 'other';
+  }
+
   String get name => data['name'] as String? ?? '';
   bool get sidechain => (data['sidechain'] as bool?) ?? false;
   bool get isError => (data['is_error'] as bool?) ?? false;
   bool get rejected => (data['rejected'] as bool?) ?? false;
   DateTime? get timestamp => DateTime.tryParse(data['timestamp'] as String? ?? '');
 
+  /// Agent started or prompted by a tool call of kind `agent`.
+  AgentLaunch? get agent =>
+      data['agent'] is Map ? AgentLaunch.fromJson((data['agent'] as Map).cast<String, dynamic>()) : null;
+
+  /// File change carried by an edit, for the diff preview.
+  Map<String, dynamic>? get change => data['change'] is Map ? (data['change'] as Map).cast<String, dynamic>() : null;
+
   bool get isMessage => type == 'user_message' || type == 'assistant_message';
-  bool get isActivity => type == 'tool_call' || type == 'tool_result' || type == 'todos_updated';
+  bool get isActivity =>
+      type == 'tool_call' || type == 'tool_result' || type == 'todos_updated' || type == 'thinking';
 }
 
 /// A Herdr workspace (project), possibly without agents.

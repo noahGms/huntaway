@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models.dart';
+import '../nesting.dart';
 import '../sync.dart';
 import 'agent_screen.dart';
 import 'common.dart';
@@ -49,7 +50,10 @@ class _InboxScreenState extends State<InboxScreen> {
         .where((a) => _machine == null || a.machineId == _machine)
         .where((a) => agentMatches(a, _search.text, machineName: model.connection(a.machineId)?.machine.name))
         .toList();
-    List<Agent> having(Set<AttentionStatus> s) => agents.where((a) => s.contains(a.attention.status)).toList();
+    // Agents started by another one show under it; a parent goes where its
+    // most urgent child would.
+    final roots = nestAgents(agents);
+    List<AgentNode> having(Set<AttentionStatus> s) => roots.where((n) => s.contains(n.urgent.status)).toList();
     final blocked = having({AttentionStatus.blocked});
     final working = having({AttentionStatus.working});
     final done = having({AttentionStatus.done});
@@ -108,26 +112,21 @@ class _InboxScreenState extends State<InboxScreen> {
               const _AllClear(),
             if (blocked.isNotEmpty) ...[
               _SectionHeader('Needs you', blocked.length, color: HuntawayColors.blocked),
-              for (final a in blocked)
-                Padding(
-                  key: ValueKey(a.key),
-                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                  child: BlockedCard(a, machine: machineOf(a)),
-                ),
+              for (final n in blocked) AgentTree(n, key: ValueKey(n.agent.key), machine: machineOf(n.agent), cards: true),
             ],
             if (working.isNotEmpty) ...[
               _SectionHeader('Working', working.length),
-              _Group([for (final a in working) AgentRow(a, key: ValueKey(a.key), machine: machineOf(a))]),
+              _Group([for (final n in working) AgentTree(n, key: ValueKey(n.agent.key), machine: machineOf(n.agent))]),
             ],
             if (done.isNotEmpty) ...[
               _SectionHeader('Done', done.length),
-              _Group([for (final a in done) AgentRow(a, key: ValueKey(a.key), machine: machineOf(a))]),
+              _Group([for (final n in done) AgentTree(n, key: ValueKey(n.agent.key), machine: machineOf(n.agent))]),
             ],
             if (idle.isNotEmpty) ...[
               _SectionHeader('Idle', idle.length,
                   expanded: _showIdle, onTap: () => setState(() => _showIdle = !_showIdle)),
               if (_showIdle || _search.text.isNotEmpty)
-                _Group([for (final a in idle) AgentRow(a, key: ValueKey(a.key), machine: machineOf(a))]),
+                _Group([for (final n in idle) AgentTree(n, key: ValueKey(n.agent.key), machine: machineOf(n.agent))]),
             ],
           ];
           return ListView.builder(
@@ -287,18 +286,127 @@ class _EmptyInbox extends StatelessWidget {
       );
 }
 
+/// An agent and, under it, the agents it started: collapsible, open by
+/// default when one of them needs you. With [cards], blocked agents show
+/// as [BlockedCard]s ("Needs you" section).
+class AgentTree extends StatefulWidget {
+  const AgentTree(this.node, {super.key, this.machine, this.cards = false, this.depth = 0});
+  final AgentNode node;
+  final String? machine;
+  final bool cards;
+  final int depth;
+
+  @override
+  State<AgentTree> createState() => _AgentTreeState();
+}
+
+class _AgentTreeState extends State<AgentTree> {
+  /// Set by a tap; otherwise open when a child needs you.
+  bool? _expanded;
+
+  @override
+  Widget build(BuildContext context) {
+    final node = widget.node;
+    final agent = node.agent;
+    final hasChildren = node.children.isNotEmpty;
+    final expanded = _expanded ?? node.childNeedsAttention;
+    final toggle = hasChildren ? () => setState(() => _expanded = !expanded) : null;
+    final count = hasChildren ? node.descendants : 0;
+    final Widget self;
+    if (widget.cards) {
+      self = Padding(
+        padding: EdgeInsets.fromLTRB(12.0 + 20 * widget.depth, 0, 12, 8),
+        child: agent.attention.status == AttentionStatus.blocked
+            ? BlockedCard(agent, machine: widget.machine, childCount: count, expanded: expanded, onToggle: toggle)
+            : Card(
+                clipBehavior: Clip.antiAlias,
+                child: AgentRow(agent,
+                    machine: widget.machine,
+                    childCount: count,
+                    expanded: expanded,
+                    onToggle: toggle,
+                    attention: expanded ? null : node.urgent),
+              ),
+      );
+    } else {
+      self = AgentRow(agent,
+          machine: widget.machine,
+          depth: widget.depth,
+          childCount: count,
+          expanded: expanded,
+          onToggle: toggle,
+          attention: expanded ? null : node.urgent);
+    }
+    if (!hasChildren || !expanded) return self;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      self,
+      for (final child in node.children) ...[
+        if (!widget.cards) Divider(indent: 46.0 + 20 * (widget.depth + 1)),
+        AgentTree(child,
+            key: ValueKey(child.agent.key), machine: widget.machine, cards: widget.cards, depth: widget.depth + 1),
+      ],
+    ]);
+  }
+}
+
+/// "2 agents ▾" on a parent: shows or hides the agents it started.
+class _ChildToggle extends StatelessWidget {
+  const _ChildToggle({required this.count, required this.expanded, required this.onTap, this.attention});
+  final int count;
+  final bool expanded;
+  final VoidCallback? onTap;
+
+  /// Most urgent status under a collapsed parent.
+  final Attention? attention;
+
+  @override
+  Widget build(BuildContext context) {
+    final urgent = attention?.status == AttentionStatus.blocked;
+    final color = urgent ? HuntawayColors.blocked : HuntawayColors.muted;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(7, 2, 3, 2),
+        decoration: BoxDecoration(
+          color: urgent ? HuntawayColors.blocked.withValues(alpha: 0.13) : HuntawayColors.surfaceHigh,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Text('$count agent${count == 1 ? '' : 's'}',
+              style: TextStyle(color: color, fontSize: 11.5, fontWeight: FontWeight.w600)),
+          Icon(expanded ? Icons.expand_less : Icons.expand_more, size: 16, color: color),
+        ]),
+      ),
+    );
+  }
+}
+
 /// One line per agent: status, what it does, where, when.
 class AgentRow extends StatelessWidget {
-  const AgentRow(this.agent, {super.key, this.machine});
+  const AgentRow(this.agent,
+      {super.key, this.machine, this.depth = 0, this.childCount = 0, this.expanded = false, this.onToggle, this.attention});
   final Agent agent;
   final String? machine;
+
+  /// Nesting level under parent agents.
+  final int depth;
+
+  /// Agents started by this one, shown under it when [expanded].
+  final int childCount;
+  final bool expanded;
+  final VoidCallback? onToggle;
+
+  /// Status to show instead of the agent's own (the most urgent of a
+  /// collapsed parent and its children).
+  final Attention? attention;
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
       onTap: () => openAgent(context, agent),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 8, 12, 8),
+        padding: EdgeInsets.fromLTRB(10.0 + 20 * depth, 8, 12, 8),
         child: Row(children: [
           AgentAvatar(agent.kind, size: 26),
           const SizedBox(width: 10),
@@ -321,12 +429,16 @@ class AgentRow extends StatelessWidget {
                 ),
             ]),
           ),
+          if (childCount > 0) ...[
+            const SizedBox(width: 8),
+            _ChildToggle(count: childCount, expanded: expanded, onTap: onToggle, attention: attention),
+          ],
           const SizedBox(width: 10),
           Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
             Text(relativeTime(agent.lastActivityAt),
                 style: const TextStyle(color: HuntawayColors.muted, fontSize: 12, fontFeatures: [FontFeature.tabularFigures()])),
             const SizedBox(height: 2),
-            StatusDot(agent.attention, size: 7),
+            StatusDot(attention ?? agent.attention, size: 7),
           ]),
         ]),
       ),
@@ -336,9 +448,14 @@ class AgentRow extends StatelessWidget {
 
 /// A blocked agent with what it asks and, for approvals, one-tap answers.
 class BlockedCard extends StatefulWidget {
-  const BlockedCard(this.agent, {super.key, this.machine});
+  const BlockedCard(this.agent, {super.key, this.machine, this.childCount = 0, this.expanded = false, this.onToggle});
   final Agent agent;
   final String? machine;
+
+  /// Agents started by this one, listed under the card when [expanded].
+  final int childCount;
+  final bool expanded;
+  final VoidCallback? onToggle;
 
   @override
   State<BlockedCard> createState() => _BlockedCardState();
@@ -450,6 +567,13 @@ class _BlockedCardState extends State<BlockedCard> {
                 ),
               ]),
             ],
+            if (widget.childCount > 0) ...[
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: _ChildToggle(count: widget.childCount, expanded: widget.expanded, onTap: widget.onToggle),
+              ),
+            ],
           ]),
         ),
       ),
@@ -494,7 +618,9 @@ class ProjectsScreen extends StatelessWidget {
                   child: Text('No agents', style: TextStyle(color: HuntawayColors.muted, fontSize: 13)),
                 )
               else
-                _Group([for (final agent in entry.value.$2) AgentRow(agent)]),
+                _Group([
+                  for (final n in nestAgents(entry.value.$2)) AgentTree(n, key: ValueKey(n.agent.key)),
+                ]),
             ],
           ],
         ],

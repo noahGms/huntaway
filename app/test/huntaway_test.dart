@@ -9,48 +9,183 @@ import 'dart:io';
 import 'package:huntaway/api.dart';
 import 'package:huntaway/cache.dart';
 import 'package:huntaway/models.dart';
+import 'package:huntaway/nesting.dart';
 import 'package:huntaway/sync.dart';
+import 'package:huntaway/turns.dart';
 import 'package:huntaway/updater.dart';
-import 'package:huntaway/ui/timeline.dart';
 
 TimelineItem item(int n, String type, [Map<String, dynamic> extra = const {}]) =>
     TimelineItem.fromJson({'n': n, 'type': type, 'timestamp': '2026-10-07T20:00:00Z', ...extra});
 
 void main() {
-  group('buildEntries', () {
-    test('groups activity between messages and hides turn ends', () {
-      final entries = buildEntries([
-        item(0, 'user_message', {'text': 'Refactor auth'}),
-        item(1, 'tool_call', {'kind': 'file_read', 'summary': 'a.ts', 'tool_use_id': 't1'}),
-        item(2, 'tool_result', {'tool_use_id': 't1'}),
-        item(3, 'tool_call', {'kind': 'file_read', 'summary': 'b.ts', 'tool_use_id': 't2'}),
-        item(4, 'tool_call', {'kind': 'file_modified', 'summary': 'a.ts', 'tool_use_id': 't3'}),
-        item(5, 'tool_call', {'kind': 'command', 'summary': 'npm test', 'tool_use_id': 't4'}),
-        item(6, 'tool_result', {'tool_use_id': 't4', 'is_error': true, 'summary': 'FAIL'}),
-        item(7, 'assistant_message', {'text': 'Fini.'}),
-        item(8, 'turn_ended'),
-        item(9, 'some_future_type'),
+  group('buildTurns', () {
+    TimelineItem at(int n, String type, String time, [Map<String, dynamic> extra = const {}]) =>
+        TimelineItem.fromJson({'n': n, 'type': type, 'timestamp': '2026-10-07T20:$time', ...extra});
+
+    test('folds the work of a turn and keeps its last reply visible', () {
+      final entries = buildTurns([
+        at(0, 'user_message', '00:00Z', {'text': 'Refactor auth'}),
+        at(1, 'thinking', '00:02Z', {'text': 'Look at the session first'}),
+        at(2, 'tool_call', '00:05Z', {'kind': 'file_read', 'summary': 'a.ts', 'tool_use_id': 't1'}),
+        at(3, 'tool_result', '00:06Z', {'tool_use_id': 't1'}),
+        at(4, 'assistant_message', '00:10Z', {'text': 'Now the edit.'}),
+        at(5, 'tool_call', '00:20Z', {
+          'kind': 'file_modified',
+          'summary': 'a.ts',
+          'tool_use_id': 't2',
+          'change': {'path': '/r/a.ts', 'old': 'x', 'new': 'y\nz', 'truncated': false},
+        }),
+        at(6, 'tool_call', '00:30Z', {
+          'kind': 'file_modified',
+          'summary': 'a.ts',
+          'tool_use_id': 't3',
+          'change': {'path': '/r/a.ts', 'old': null, 'new': 'w', 'truncated': false},
+        }),
+        at(7, 'tool_call', '00:40Z', {'kind': 'command', 'summary': 'npm test', 'tool_use_id': 't4'}),
+        at(8, 'tool_result', '00:50Z', {'tool_use_id': 't4', 'is_error': true, 'summary': 'FAIL'}),
+        at(9, 'assistant_message', '01:00Z', {'text': 'Done.'}),
+        at(10, 'assistant_message', '01:01Z', {'text': 'Anything else?'}),
+        at(11, 'turn_ended', '01:40Z', {'duration_ms': 100000}),
+        at(12, 'some_future_type', '01:41Z'),
       ]);
-      expect(entries.length, 3);
-      expect(entries[0], isA<MessageEntry>());
-      final activity = entries[1] as ActivityEntry;
-      expect(activity.summary, '2 reads · 1 edit · npm test');
-      expect(activity.errors, 1);
-      expect(entries[2], isA<MessageEntry>());
+      expect(entries.map((e) => e.runtimeType.toString()).toList(),
+          ['MessageEntry', 'WorkEntry', 'MessageEntry', 'MessageEntry', 'ChangesEntry']);
+      final work = entries[1] as WorkEntry;
+      expect(work.summary, 'Worked 1m 40s · 1 file read · 1 command · 1 file changed');
+      expect(work.errors, 1);
+      // The intermediate reply and the thinking are folded in the work.
+      expect(work.items.map((i) => i.type), containsAll(['thinking', 'assistant_message']));
+      expect((entries[2] as MessageEntry).item.text, 'Done.');
+      expect((entries[3] as MessageEntry).continued, isTrue);
+      final changes = entries[4] as ChangesEntry;
+      expect(changes.files.single.path, '/r/a.ts');
+      expect((changes.added, changes.removed), (3, 1));
+      expect(changes.files.single.changes.length, 2);
     });
 
-    test('flags rejected tools and folds sub-agents', () {
-      final entries = buildEntries([
+    test('takes the duration from the timestamps without a turn end', () {
+      final entries = buildTurns([
+        at(0, 'user_message', '00:00Z', {'text': 'Go'}),
+        at(1, 'tool_call', '00:42Z', {'kind': 'search', 'summary': 'auth', 'tool_use_id': 't1'}),
+        at(2, 'assistant_message', '00:45Z', {'text': 'Found it.'}),
+      ]);
+      expect((entries[1] as WorkEntry).summary, 'Worked 45s · 1 search');
+    });
+
+    test('a live turn keeps everything in an open work row showing the current action', () {
+      final entries = buildTurns([
+        at(0, 'user_message', '00:00Z', {'text': 'Done before'}),
+        at(1, 'assistant_message', '00:01Z', {'text': 'Ok.'}),
+        at(2, 'user_message', '00:10Z', {'text': 'Run the tests'}),
+        at(3, 'assistant_message', '00:11Z', {'text': 'Running them.'}),
+        at(4, 'tool_call', '00:12Z', {'kind': 'command', 'summary': 'npm test', 'tool_use_id': 't1'}),
+      ], live: true);
+      expect(entries.map((e) => e.runtimeType.toString()).toList(),
+          ['MessageEntry', 'MessageEntry', 'MessageEntry', 'WorkEntry']);
+      final work = entries.last as WorkEntry;
+      expect(work.live, isTrue);
+      expect(work.currentAction, 'Running npm test');
+      expect(work.items.length, 2);
+      // Nothing yet: the row shows thinking.
+      final empty = buildTurns([at(0, 'user_message', '00:00Z', {'text': 'Hi'})], live: true);
+      expect((empty.last as WorkEntry).currentAction, 'Thinking');
+      expect(buildTurns(const [], live: true).single, isA<WorkEntry>());
+    });
+
+    test('shows agent launches and answered questions in the turn, skips sub-agents', () {
+      final entries = buildTurns([
+        at(0, 'user_message', '00:00Z', {'text': 'Split the work'}),
+        at(1, 'tool_call', '00:01Z', {
+          'kind': 'agent',
+          'summary': 'herdr agent start docs',
+          'tool_use_id': 't1',
+          'agent': {'name': 'docs', 'pane_id': 'w1:p3', 'kind': 'codex', 'prompt': 'Write the docs', 'start': true},
+        }),
+        at(2, 'tool_call', '00:02Z', {'kind': 'question', 'summary': 'Which storage?', 'tool_use_id': 'q1'}),
+        at(3, 'question_asked', '00:02Z', {'tool_use_id': 'q1'}),
+        at(4, 'tool_result', '00:03Z', {'tool_use_id': 'q1', 'summary': 'Secure storage'}),
+        at(5, 'thinking', '00:04Z', {'text': 'sub', 'sidechain': true}),
+        at(6, 'tool_call', '00:05Z', {'kind': 'command', 'summary': 'ls', 'sidechain': true, 'tool_use_id': 's1'}),
+        at(7, 'tool_call', '00:06Z', {'kind': 'brand_new_kind', 'summary': 'x', 'tool_use_id': 't2'}),
+        at(8, 'notice', '00:07Z', {'text': 'Interrupted by user'}),
+      ]);
+      expect(entries.map((e) => e.runtimeType.toString()).toList(),
+          ['MessageEntry', 'WorkEntry', 'AgentLaunchEntry', 'QuestionEntry', 'NoticeEntry']);
+      final work = entries[1] as WorkEntry;
+      expect(work.summary, 'Worked 7s · 1 agent · 1 tool');
+      expect(work.items.any((i) => i.sidechain), isFalse);
+      expect((entries[2] as AgentLaunchEntry).call.agent!.name, 'docs');
+      expect((entries[3] as QuestionEntry).result!.summary, 'Secure storage');
+    });
+
+    test('flags rejected tools', () {
+      final entries = buildTurns([
         item(0, 'tool_call', {'kind': 'command', 'summary': 'rm x', 'tool_use_id': 't1'}),
         item(1, 'tool_result', {'tool_use_id': 't1', 'is_error': true, 'rejected': true}),
         item(2, 'assistant_message', {'text': 'chatter', 'sidechain': true}),
-        item(3, 'notice', {'text': 'Interrupted by user'}),
       ]);
-      expect(entries.length, 2);
-      final activity = entries[0] as ActivityEntry;
-      expect(activity.rejected, 1);
-      expect(activity.errors, 0);
-      expect(entries[1], isA<NoticeEntry>());
+      final work = entries.single as WorkEntry;
+      expect(work.rejected, 1);
+      expect(work.errors, 0);
+    });
+
+    test('row ids stay stable as items arrive', () {
+      final first = buildTurns([item(0, 'user_message'), item(1, 'tool_call', {'kind': 'search'})], live: true);
+      final next = buildTurns(
+          [item(0, 'user_message'), item(1, 'tool_call', {'kind': 'search'}), item(2, 'tool_call', {'kind': 'web'})],
+          live: true);
+      expect(first.map((e) => e.id), next.map((e) => e.id));
+    });
+  });
+
+  group('nesting', () {
+    Agent agent(String id, String status, {String? parent, List<String> children = const [], String? name}) =>
+        Agent.fromJson('m1', {
+          'id': id,
+          'pane_id': id.split(':').skip(1).join(':'),
+          'attention': {'status': status},
+          'parent_id': ?parent,
+          'children': children,
+          'name': ?name,
+        });
+
+    test('puts children under their live parent and bubbles the most urgent status', () {
+      final roots = nestAgents([
+        agent('d:w1:p1', 'working', children: ['d:w1:p2', 'd:w1:p3']),
+        agent('d:w1:p2', 'blocked', parent: 'd:w1:p1'),
+        agent('d:w1:p3', 'done', parent: 'd:w1:p1'),
+        agent('d:w2:p1', 'idle', parent: 'd:gone'),
+      ]);
+      expect(roots.map((n) => n.agent.id), ['d:w1:p1', 'd:w2:p1']);
+      final parent = roots.first;
+      expect(parent.children.map((n) => n.agent.id), ['d:w1:p2', 'd:w1:p3']);
+      expect(parent.descendants, 2);
+      expect(parent.urgent.status, AttentionStatus.blocked);
+      expect(parent.childNeedsAttention, isTrue);
+      expect(roots.last.childNeedsAttention, isFalse);
+    });
+
+    test('nests grandchildren and leaves loops at the top', () {
+      final roots = nestAgents([
+        agent('d:a', 'idle'),
+        agent('d:b', 'idle', parent: 'd:a'),
+        agent('d:c', 'blocked', parent: 'd:b'),
+        agent('d:x', 'idle', parent: 'd:y'),
+        agent('d:y', 'idle', parent: 'd:x'),
+      ]);
+      expect(roots.map((n) => n.agent.id), ['d:a', 'd:x', 'd:y']);
+      expect(roots.first.descendants, 2);
+      expect(roots.first.urgent.status, AttentionStatus.blocked);
+    });
+
+    test('finds the agent a launch started: pane first, then name', () {
+      final parent = agent('d:w1:p1', 'working', children: ['d:w1:p2', 'd:w1:p3']);
+      final byPane = agent('d:w1:p2', 'working', parent: 'd:w1:p1', name: 'other');
+      final byName = agent('d:w1:p3', 'blocked', parent: 'd:w1:p1', name: 'docs');
+      final all = [parent, byPane, byName];
+      expect(launchedAgent(parent, AgentLaunch(paneId: 'w1:p2', name: 'docs'), all), byPane);
+      expect(launchedAgent(parent, AgentLaunch(name: 'docs'), all), byName);
+      expect(launchedAgent(parent, AgentLaunch(name: 'nobody'), all), isNull);
     });
   });
 
@@ -85,6 +220,28 @@ void main() {
     expect(agent.interaction!.tool!.input['command'], 'npm test');
     expect(agent.interaction!.options.last.label, 'No');
     expect(agent.displayName, 'Claude');
+    // Fields of newer bridges default when missing.
+    expect(agent.parentId, isNull);
+    expect(agent.children, isEmpty);
+    expect(agent.queued, isEmpty);
+  });
+
+  test('Agent.fromJson reads parent, children and queued messages', () {
+    final agent = Agent.fromJson('m1', {
+      'id': 'default:w1:p2',
+      'attention': {'status': 'working'},
+      'name': 'docs',
+      'parent_id': 'default:w1:p1',
+      'children': ['default:w1:p3'],
+      'queued': [
+        {'text': 'And the tests', 'at': 1791403200},
+      ],
+    });
+    expect(agent.name, 'docs');
+    expect(agent.parentId, 'default:w1:p1');
+    expect(agent.children, ['default:w1:p3']);
+    expect(agent.queued.single.text, 'And the tests');
+    expect(agent.queued.single.at.millisecondsSinceEpoch, 1791403200000);
   });
 
   group('pairing', () {

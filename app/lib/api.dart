@@ -68,7 +68,7 @@ class BridgeClient {
   }
 
   Future<dynamic> _send(String method, String path,
-      {Map<String, dynamic>? body, Map<String, String>? query}) async {
+      {Map<String, dynamic>? body, Map<String, String>? query, Duration postTimeout = const Duration(seconds: 20)}) async {
     final address = _address ?? await resolveAddress();
     final uri = _uri(address, path, query);
     late http.Response r;
@@ -77,7 +77,7 @@ class BridgeClient {
         'GET' => await _http.get(uri, headers: _headers).timeout(_timeout),
         _ => await _http
             .post(uri, headers: _headers, body: jsonEncode(body ?? const {}))
-            .timeout(const Duration(seconds: 20)),
+            .timeout(postTimeout),
       };
     } on TimeoutException {
       _address = null;
@@ -146,6 +146,19 @@ class BridgeClient {
     final r = await _send('POST', '/v1/agents',
         body: {'session': session, 'workspace_id': workspaceId, 'kind': kind, 'prompt': prompt}) as Map;
     return (r['agent_id'] as String, (r['prompt_sent'] as bool?) ?? false);
+  }
+
+  /// Latest huntawayd release: `current`, `latest`, `available`.
+  Future<Map<String, dynamic>> daemonUpdate() async =>
+      (await _send('GET', '/v1/daemon/update') as Map).cast<String, dynamic>();
+
+  /// Installs the latest huntawayd (permission `daemon.update`), which then
+  /// restarts in place: the connection drops and comes back. Refused with
+  /// `up_to_date` when there is nothing to install. Returns the new version.
+  Future<String> updateDaemon() async {
+    // Downloads the release before answering.
+    final r = await _send('POST', '/v1/daemon/update', postTimeout: const Duration(minutes: 3)) as Map;
+    return r['to'] as String? ?? '';
   }
 
   /// Usage metrics of this machine (PRD §22).

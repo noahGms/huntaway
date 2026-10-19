@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../api.dart';
 import '../models.dart';
+import '../nesting.dart';
 import '../sync.dart';
 import 'common.dart';
 import 'terminal_screen.dart';
@@ -15,9 +16,12 @@ String? openAgentKey;
 
 /// Agent screen (PRD §13.2): conversation + activity, approval card, composer.
 class AgentScreen extends StatefulWidget {
-  const AgentScreen({super.key, required this.machineId, required this.agentId});
+  const AgentScreen({super.key, required this.machineId, required this.agentId, this.parentOnStack = false});
   final String machineId;
   final String agentId;
+
+  /// Opened from its parent's conversation: the breadcrumb goes back to it.
+  final bool parentOnStack;
 
   @override
   State<AgentScreen> createState() => _AgentScreenState();
@@ -31,16 +35,21 @@ class _AgentScreenState extends State<AgentScreen> {
   bool _waitedLongEnough = false;
   MachineConnection? _connection;
 
-  /// Entries of the timeline, rebuilt only when it changes.
+  /// Agent screen open before this one (a parent), restored on close.
+  String? _previousOpen;
+
+  /// Entries of the timeline, rebuilt only when it or [live] changes.
   List<Entry> _entries = const [];
   int _entriesVersion = -1;
   int _entriesGeneration = -1;
+  bool _entriesLive = false;
 
   String get _key => '${widget.machineId}/${widget.agentId}';
 
   @override
   void initState() {
     super.initState();
+    _previousOpen = openAgentKey;
     openAgentKey = _key;
     _scroll.addListener(_maybeLoadOlder);
     // A just-created agent shows up a moment after the request returns.
@@ -54,7 +63,7 @@ class _AgentScreenState extends State<AgentScreen> {
 
   @override
   void dispose() {
-    if (openAgentKey == _key) openAgentKey = null;
+    if (openAgentKey == _key) openAgentKey = _previousOpen;
     _connection?.unwatch(widget.agentId);
     _giveUp?.cancel();
     _input.dispose();
@@ -72,13 +81,30 @@ class _AgentScreenState extends State<AgentScreen> {
     c.loadOlder(widget.agentId);
   }
 
-  List<Entry> _entriesOf(TimelineState t) {
-    if (t.version != _entriesVersion || t.generation != _entriesGeneration) {
-      _entries = buildEntries(t.items).reversed.toList();
+  List<Entry> _entriesOf(TimelineState t, {required bool live}) {
+    if (t.version != _entriesVersion || t.generation != _entriesGeneration || live != _entriesLive) {
+      _entries = buildTurns(t.items, live: live).reversed.toList();
       _entriesVersion = t.version;
       _entriesGeneration = t.generation;
+      _entriesLive = live;
     }
     return _entries;
+  }
+
+  void _open(Agent agent) => Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => AgentScreen(machineId: agent.machineId, agentId: agent.id, parentOnStack: true),
+      ));
+
+  /// Back to the parent: the screen below when opened from it, else
+  /// replaces this one.
+  void _openParent(Agent parent) {
+    if (widget.parentOnStack) {
+      Navigator.of(context).pop();
+      return;
+    }
+    Navigator.of(context).pushReplacement(MaterialPageRoute(
+      builder: (_) => AgentScreen(machineId: parent.machineId, agentId: parent.id),
+    ));
   }
 
   Future<void> _run(Future<void> Function() action) async {
@@ -163,7 +189,12 @@ class _AgentScreenState extends State<AgentScreen> {
       );
 
   Widget _screen(AppModel model, MachineConnection c, Agent agent, TimelineState timeline) {
-    final entries = _entriesOf(timeline);
+    final working = agent.attention.status == AttentionStatus.working;
+    final entries = _entriesOf(timeline, live: working);
+    // Newest first, like the entries (the list is reversed).
+    final queued = agent.queued.reversed.toList();
+    final parent = agent.parentId == null ? null : c.agents[agent.parentId];
+    final index = {for (var i = 0; i < entries.length; i++) entries[i].id: queued.length + i};
     final canWrite = c.machine.can('agents.message');
     final pending = agent.interaction != null && agent.interaction!.reason != 'explicit_question';
     final answered = c.answered(agent);
@@ -219,6 +250,7 @@ class _AgentScreenState extends State<AgentScreen> {
       ),
       body: Column(children: [
         if (c.status != ConnectionStatus.online) OfflineBanner([c]),
+        if (parent != null) _Breadcrumb(parent: parent, child: agent, onTap: () => _openParent(parent)),
         if (!agent.hasTranscript)
           Container(
             width: double.infinity,
@@ -243,23 +275,35 @@ class _AgentScreenState extends State<AgentScreen> {
                       controller: _scroll,
                       reverse: true,
                       padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
-                      itemCount: entries.length + 1,
+                      itemCount: queued.length + entries.length + 1,
+                      // Rows keep their state (expanded…) as new ones arrive.
+                      findChildIndexCallback: (key) => key is ValueKey<String> ? index[key.value] : null,
                       itemBuilder: (context, i) {
+                        if (i < queued.length) {
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 5),
+                            child: QueuedBubble(queued[i], waiting: working),
+                          );
+                        }
+                        i -= queued.length;
                         if (i == entries.length) return _top(c, agent, timeline);
+                        final entry = entries[i];
                         return Padding(
+                          key: ValueKey(entry.id),
                           padding: const EdgeInsets.symmetric(vertical: 5),
-                          child: switch (entries[i]) {
+                          child: switch (entry) {
                             MessageEntry(:final item, :final continued) =>
                               MessageBubble(item, agentName: agent.displayName, showHeader: !continued),
-                            ActivityEntry e => ActivityTile(e),
-                            QuestionEntry(:final item) => QuestionTile(item),
+                            WorkEntry e => WorkTile(e),
+                            ChangesEntry e => ChangesTile(e),
+                            AgentLaunchEntry(:final call) => _launchCard(c, agent, call),
+                            QuestionEntry e => QuestionTile(e),
                             NoticeEntry e => NoticeTile(e),
                           },
                         );
                       },
                     ),
         ),
-        if (agent.attention.status == AttentionStatus.working) _LiveLine(agent: agent, timeline: timeline),
         if (pending && c.machine.can('agents.approve'))
           InteractionCard(
             agent: agent,
@@ -320,6 +364,12 @@ class _AgentScreenState extends State<AgentScreen> {
           ),
       ]),
     );
+  }
+
+  Widget _launchCard(MachineConnection c, Agent agent, TimelineItem call) {
+    final launch = call.agent;
+    final child = launch == null ? null : launchedAgent(agent, launch, c.agents.values);
+    return AgentLaunchCard(call, child: child, onOpen: child == null ? null : () => _open(child));
   }
 
   /// Top of the conversation: older pages, their errors, or its start.
@@ -387,73 +437,41 @@ class _ErrorLine extends StatelessWidget {
       );
 }
 
-/// "● Running npm test… 0:42" above the composer while the agent works.
-class _LiveLine extends StatefulWidget {
-  const _LiveLine({required this.agent, required this.timeline});
-  final Agent agent;
-  final TimelineState timeline;
+/// "Parent title › child" above a child agent's conversation.
+class _Breadcrumb extends StatelessWidget {
+  const _Breadcrumb({required this.parent, required this.child, required this.onTap});
+  final Agent parent;
+  final Agent child;
+  final VoidCallback onTap;
 
   @override
-  State<_LiveLine> createState() => _LiveLineState();
-}
-
-class _LiveLineState extends State<_LiveLine> {
-  Timer? _clock;
-
-  @override
-  void initState() {
-    super.initState();
-    // Refresh the relative time; only this line rebuilds.
-    _clock = Timer.periodic(const Duration(seconds: 15), (_) => setState(() {}));
-  }
-
-  @override
-  void dispose() {
-    _clock?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final agent = widget.agent;
-    TimelineItem? lastCall;
-    for (final item in widget.timeline.items.reversed) {
-      if (item.type == 'tool_call' && !item.sidechain) {
-        lastCall = item;
-        break;
-      }
-      if (item.isMessage) break;
-    }
-    final what = switch (lastCall?.kind) {
-      null => 'Thinking',
-      'file_read' => 'Reading ${lastCall!.summary}',
-      'search' => 'Searching ${lastCall!.summary}',
-      'file_modified' => 'Editing ${lastCall!.summary}',
-      'command' => 'Running ${lastCall!.summary}',
-      'subagent' => 'Subagent: ${lastCall!.summary}',
-      _ => '${lastCall!.name} ${lastCall.summary}',
-    };
-    return Container(
-      margin: const EdgeInsets.fromLTRB(12, 2, 12, 4),
-      padding: const EdgeInsets.fromLTRB(6, 7, 12, 7),
-      decoration: BoxDecoration(
-        color: HuntawayColors.working.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: HuntawayColors.working.withValues(alpha: 0.18)),
-      ),
-      child: Row(children: [
-        StatusDot(agent.attention, size: 7),
-        const SizedBox(width: 4),
-        Expanded(
-          child: Text('$what…',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: HuntawayColors.text, fontSize: 13.5)),
+  Widget build(BuildContext context) => InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+          child: Row(children: [
+            const Icon(Icons.subdirectory_arrow_right_rounded, size: 15, color: HuntawayColors.muted),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(agentTitle(parent),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: HuntawayColors.accent, fontSize: 12.5, fontWeight: FontWeight.w500)),
+            ),
+            const Text('  ›  ', style: TextStyle(color: HuntawayColors.faint, fontSize: 12.5)),
+            Flexible(
+              child: Text(child.name ?? child.displayName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: HuntawayColors.muted, fontSize: 12.5)),
+            ),
+            if (parent.attention.status == AttentionStatus.blocked) ...[
+              const SizedBox(width: 6),
+              StatusDot(parent.attention, size: 6),
+            ],
+          ]),
         ),
-        Text(relativeTime(agent.lastActivityAt), style: const TextStyle(color: HuntawayColors.muted, fontSize: 12)),
-      ]),
-    );
-  }
+      );
 }
 
 /// Approval / question / dialog card (PRD §13.3–§13.4).

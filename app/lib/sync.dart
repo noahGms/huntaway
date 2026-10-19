@@ -96,6 +96,12 @@ class MachineConnection extends ChangeNotifier {
   ConnectionStatus status = ConnectionStatus.connecting;
   String? lastError;
   DateTime? lastSyncAt;
+
+  /// huntawayd version, from the last state or machine info.
+  String? bridgeVersion;
+
+  /// Version huntawayd announced it restarts into (self-update).
+  String? restartingTo;
   final Map<String, Agent> agents = {};
   final List<Workspace> workspaces = [];
   final Map<String, TimelineState> timelines = {};
@@ -201,6 +207,7 @@ class MachineConnection extends ChangeNotifier {
     final machineInfo = s['machine'] as Map;
     _epoch = machineInfo['epoch'] as String;
     _seq = s['seq'] as int;
+    bridgeVersion = machineInfo['bridge_version'] as String? ?? bridgeVersion;
     if (_setName(machineInfo['machine_name'] as String?)) onMachineChanged?.call();
     final previous = Map.of(agents);
     agents
@@ -253,13 +260,22 @@ class MachineConnection extends ChangeNotifier {
         }
       }();
 
-  /// Picks up a new machine name and the addresses the bridge listens on
-  /// now (the Tailscale or LAN IP may have changed since pairing).
+  /// Picks up a new machine name, the addresses the bridge listens on now
+  /// (the Tailscale or LAN IP may have changed since pairing), its version
+  /// and the permissions of this phone (granted after pairing).
   Future<void> _refreshMachine() async {
     try {
       final m = await client.machineInfo();
       final info = (m['machine'] as Map?) ?? const {};
+      final version = info['bridge_version'] as String?;
+      final notify = version != null && version != bridgeVersion;
+      if (version != null) bridgeVersion = version;
       var changed = _setName(info['machine_name'] as String?);
+      final permissions = ((m['device'] as Map?)?['permissions'] as List?)?.whereType<String>().toList();
+      if (permissions != null && !listEquals(permissions, machine.permissions)) {
+        machine.permissions = permissions;
+        changed = true;
+      }
       final raw = m['addresses'] ?? info['addresses'];
       if (raw is List) {
         final fresh = raw.whereType<String>().where((a) => a.isNotEmpty).toList();
@@ -270,10 +286,8 @@ class MachineConnection extends ChangeNotifier {
           changed = true;
         }
       }
-      if (changed) {
-        onMachineChanged?.call();
-        notifyListeners();
-      }
+      if (changed) onMachineChanged?.call();
+      if (changed || notify) notifyListeners();
     } catch (_) {
       // Older bridges or a blip: keep what we have.
     }
@@ -382,6 +396,10 @@ class MachineConnection extends ChangeNotifier {
           interactionId: interactionId == null || interactionId.isEmpty ? null : interactionId,
           replayed: seq <= _helloSeq,
         ));
+      case 'daemon.restarting':
+        // Self-update: the stream drops and comes back on the new version.
+        restartingTo = data['to'] as String?;
+        notifyListeners();
       default:
         return; // Unknown events are ignored.
     }
