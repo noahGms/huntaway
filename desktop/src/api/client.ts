@@ -12,6 +12,7 @@ import type {
   LibrarySkill,
   LibraryView,
   LocalStatus,
+  MachineLimits,
   MachineRecord,
   MachineResponse,
   MachineView,
@@ -103,6 +104,8 @@ export const api = {
   saveScript: (m: string, body: { path: string; name: string; cmd: string; cwd?: string; rename_from?: string }) =>
     api.post<ProjectScripts>(m, "/v1/scripts", body),
   deleteScript: (m: string, path: string, name: string) => api.post(m, "/v1/scripts/delete", { path, name }),
+  /** Plan limits of Claude and Codex on the machine. */
+  limits: (m: string) => api.get<MachineLimits>(m, "/v1/limits"),
   shells: (m: string, path: string) => api.get<ProjectShells>(m, `/v1/shells${query({ path })}`),
   openShell: (m: string, path: string) => api.post<{ shell: ShellView }>(m, "/v1/shells", { path }),
   closeShell: (m: string, pane: string) => api.post(m, "/v1/shells/close", { pane }),

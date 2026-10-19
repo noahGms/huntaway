@@ -1,11 +1,13 @@
 import { Bot, Check, Cpu, FilePen, FileSearch, Folder, Globe, Loader2, MessageSquare, Server, SquareTerminal, Timer, X } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
-import type { RateWindow, Usage } from "../../api/types";
+import type { ProviderLimits, RateWindow, Usage } from "../../api/types";
 import { computeActivity } from "../../lib/activity";
 import { statusLabel, type Conversation } from "../../lib/conversations";
 import { clockTime, duration, fullDate, LOCALE, parseTime, tokens, usd } from "../../lib/format";
+import { useLimits } from "../../store/limits";
 import { useMachines } from "../../store/machines";
 import { useSettings } from "../../store/settings";
+import { ProviderDetails } from "../ui/Limits";
 import { Badge, attentionTone, MachineDot } from "../ui/Status";
 import { TodoIcon } from "../conversation/TimelineRows";
 
@@ -39,6 +41,8 @@ export function ActivityTab({ conv }: { conv: Conversation }) {
   const activity = useMemo(() => computeActivity(timeline?.items ?? []), [timeline?.items]);
   const agent = conv.agent;
   const usage = agent?.usage ?? null;
+  // The machine's plan limits for this agent (fresher than the transcript's).
+  const planLimits = useLimits((s) => s.byMachine[conv.machineId]?.providers.find((p) => p.kind === conv.kind && p.windows.length > 0));
   const model = agent?.model ?? conv.history?.model ?? usage?.model ?? null;
   const started = agent?.started_at ?? conv.history?.started_at ?? activity.startedAt;
   // Whole conversation when its start and last activity are known; else the loaded items.
@@ -159,12 +163,19 @@ export function ActivityTab({ conv }: { conv: Conversation }) {
         </Section>
       )}
 
-      {usage && <UsageSection usage={usage} showCost={showCost} />}
+      {usage && <UsageSection usage={usage} showCost={showCost} planLimits={planLimits} />}
+      {!usage && planLimits && (
+        <Section title="Plan limits">
+          <div className="px-3.5 py-3">
+            <ProviderDetails p={planLimits} />
+          </div>
+        </Section>
+      )}
     </div>
   );
 }
 
-function UsageSection({ usage, showCost }: { usage: Usage; showCost: boolean }) {
+function UsageSection({ usage, showCost, planLimits }: { usage: Usage; showCost: boolean; planLimits?: ProviderLimits }) {
   const total = usage.input_tokens + usage.output_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
   const pct = usage.context_window ? Math.min(100, Math.round((usage.context_tokens / usage.context_window) * 100)) : null;
   const limits = usage.rate_limits;
@@ -195,7 +206,11 @@ function UsageSection({ usage, showCost }: { usage: Usage; showCost: boolean }) 
           </div>
         )}
       </div>
-      {limits && (limits.primary || limits.secondary) && (
+      {planLimits ? (
+        <div className="border-t border-border px-3.5 py-3">
+          <ProviderDetails p={planLimits} />
+        </div>
+      ) : limits && (limits.primary || limits.secondary) && (
         <div className="space-y-2.5 border-t border-border px-3.5 py-3">
           <div className="text-[11.5px] text-faint">Plan limits{limits.plan_type ? ` (${limits.plan_type})` : ""}</div>
           {limits.primary && <Limit label="Short window" w={limits.primary} />}

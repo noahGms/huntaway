@@ -4,11 +4,13 @@ import { api, app, errorMessage } from "../api/client";
 import type { LocalStatus, MachineResponse, MachineView } from "../api/types";
 import { Button, IconButton, Spinner } from "../components/ui/Button";
 import { inputClass } from "../components/ui/Dialog";
+import { LimitsGauge } from "../components/ui/Limits";
 import { Menu, MenuItem, MenuSeparator } from "../components/ui/Menu";
 import { Badge, MachineDot } from "../components/ui/Status";
 import { duration } from "../lib/format";
 import { moveMachine, orderMachines } from "../lib/spaces";
 import { DAEMON_UPDATE_COMMAND, daemonOutdated, useDaemonUpdates, useUpdates } from "../lib/updates";
+import { useLimits } from "../store/limits";
 import { can, machineList, useMachines } from "../store/machines";
 import { usePrefs } from "../store/prefs";
 import { useUi } from "../store/ui";
@@ -41,7 +43,7 @@ export function PageHeader({ title, subtitle, children }: { title: string; subti
   );
 }
 
-const COLS = "grid grid-cols-[28px_minmax(150px,1.6fr)_minmax(96px,0.8fr)_64px_minmax(120px,0.9fr)_72px_minmax(90px,0.8fr)_32px] items-center gap-x-3";
+const COLS = "grid grid-cols-[28px_minmax(150px,1.6fr)_minmax(96px,0.8fr)_64px_minmax(120px,0.9fr)_72px_minmax(150px,1fr)_minmax(90px,0.8fr)_32px] items-center gap-x-3";
 
 const versionOf = (m: MachineView, info?: MachineResponse | null) => info?.machine.bridge_version ?? m.snapshot?.machine.bridge_version ?? null;
 
@@ -71,6 +73,7 @@ export function ServersPage() {
                 <span className="text-right">Latency</span>
                 <span>huntawayd</span>
                 <span className="text-right">Agents</span>
+                <span>Plan limits</span>
                 <span>Group</span>
                 <span />
               </div>
@@ -203,6 +206,7 @@ function MachineRow({ machine, order, first, last, latest }: { machine: MachineV
   const slow = (status.latency_ms ?? 0) > 400;
   const version = versionOf(machine, info);
   const memberOf = groups.filter((g) => g.machineIds.includes(id));
+  const hasLimits = useLimits((s) => (s.byMachine[id]?.providers ?? []).some((p) => p.windows.length > 0 || p.error));
 
   const startRename = () => {
     setName(record.name);
@@ -293,6 +297,9 @@ function MachineRow({ machine, order, first, last, latest }: { machine: MachineV
           {waiting > 0 && <span className="rounded bg-blocked px-1 text-[10.5px] font-semibold leading-4 text-ink">{waiting}</span>}
           {snapshot ? agents.length : "—"}
         </button>
+        <span className="flex min-w-0 items-center">
+          {hasLimits ? <LimitsGauge machineId={id} title={record.name} bars /> : <span className="text-faint">—</span>}
+        </span>
         <Menu
           align="start"
           trigger={

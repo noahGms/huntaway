@@ -16,6 +16,7 @@ import { usePrefs } from "../../store/prefs";
 import { useSettings } from "../../store/settings";
 import { useUi, type View } from "../../store/ui";
 import { IconButton, Kbd } from "../ui/Button";
+import { LimitsGauge, MachinesLimitsGauge } from "../ui/Limits";
 import { Logo } from "../ui/Logo";
 import { ContextMenu, Menu, MenuItem, MenuSeparator } from "../ui/Menu";
 import { MachineDot, StatusDot, agentLabel } from "../ui/Status";
@@ -135,6 +136,11 @@ export function Sidebar() {
       <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 pb-1.5">
         <SpaceMenu machines={machines} waiting={waiting} />
         <DisplayMenu />
+        {!rows.some((r) => r.type === "machine") && (
+          <span className="ml-auto pr-1">
+            <MachinesLimitsGauge machines={spaceMachines} />
+          </span>
+        )}
       </div>
 
       <div className="min-h-0 flex-1 pt-1">
@@ -216,6 +222,7 @@ const MachineRow = memo(function MachineRow({ row, machine }: { row: Extract<Sid
         >
           <ArrowUpRight size={13} />
         </button>
+        <LimitsGauge machineId={row.machineId} title={row.name} />
         <Count count={row.count} waiting={row.waiting} />
       </div>
     </div>

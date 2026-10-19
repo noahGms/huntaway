@@ -4,8 +4,9 @@
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { api, app } from "../api/client";
-import type { AgentView, Envelope, HistoryEntry, MachineStatus, MachineView, StateSnapshot, StoredItem, TimelinePage } from "../api/types";
+import type { AgentView, Envelope, HistoryEntry, MachineLimits, MachineStatus, MachineView, StateSnapshot, StoredItem, TimelinePage } from "../api/types";
 import { liveKey, parseKey } from "../lib/conversations";
+import { useLimits } from "./limits";
 import { useProjects } from "./projects";
 
 export interface TimelineState {
@@ -157,6 +158,9 @@ export const useMachines = create<MachinesState>((set, get) => {
       case "shells.updated":
         useProjects.getState().onEvent(machineId, event);
         break;
+      case "limits.updated":
+        useLimits.getState().set(machineId, event.data as MachineLimits);
+        break;
       case "sessions.updated":
         setMachine(machineId, (m) =>
           m.snapshot ? { ...m, snapshot: { ...m.snapshot, sessions: (event.data as { sessions: StateSnapshot["sessions"] }).sessions } } : m,
@@ -224,6 +228,7 @@ export const useMachines = create<MachinesState>((set, get) => {
           }
           setMachine(machine_id, (m) => ({ ...m, snapshot }));
           useProjects.getState().reloadMachine(machine_id);
+          void useLimits.getState().load(machine_id);
           // Events may have been missed: reload the open live timelines of this machine.
           for (const [key, tl] of Object.entries(get().timelines)) {
             const k = parseKey(key);
