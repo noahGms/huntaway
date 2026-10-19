@@ -87,7 +87,7 @@ Everything is in the [latest release](https://github.com/noahGms/huntaway/releas
 
 - **Desktop**: checks at launch and every 6 hours, downloads in the background, then offers "Restart". Also in Settings → Check for updates.
 - **Android**: checks at launch (at most every 6 hours) and shows "Update available". The app downloads the APK, verifies its SHA-256 and opens the Android installer. The first time, Android asks you to allow Huntaway to install apps. Also in Settings → Check for updates.
-- **Daemon**: the Servers page flags machines running an older `huntawayd` and shows the update command.
+- **Daemon**: the Servers page flags machines running an older `huntawayd`, with an "Update" button (one machine or all of them) for devices paired with `--full`, otherwise the command to run. On a machine: `huntawayd update` (`--check` to only look). The new binary is checked against `SHA256SUMS` and tried before it replaces the old one, kept as `huntawayd.old`; if the new one keeps failing to start, the previous one comes back by itself.
 
 ## 3. Add your machines
 
@@ -111,7 +111,7 @@ On the machine, run `huntawayd pair`: a QR code is shown. In the app, choose "Ad
 | Command | The device can… |
 |---|---|
 | `huntawayd pair` | read (conversations, history, files, terminal), send messages, approve, interrupt, start and stop the project scripts |
-| `huntawayd pair --full` | everything, including creating and resuming agents, typing directly in the terminal, adding scripts and opening shells |
+| `huntawayd pair --full` | everything, including creating and resuming agents, typing directly in the terminal, adding scripts, opening shells, syncing skills and updating the daemon |
 | `huntawayd pair --read-only` | only watch |
 
 Manage paired devices:
@@ -140,7 +140,8 @@ huntawayd devices revoke <id>
 - **Spaces**: the selector at the top shows all machines, one machine, or a group of machines (groups are defined in Settings or on the Servers page). Star your favorite projects; projects idle for a while (14 days by default) are hidden until you ask for them.
 - **Servers**: a table with each machine's state, latency, daemon version, agents and group. Rename, reorder, reconnect or forget machines there.
 - **Project page**: a project's conversations, including past ones, "New session here", its [scripts](#scripts) and its [terminals](#terminal).
-- **Conversation**: the agent's thread with its plans, diffs and commands. When the agent is waiting, an approval card shows up (keys `1` to `9`, `Esc` to deny). In the input: `@` to mention a project file, `/` for the agent's commands, paste or drop an image to attach it.
+- **Conversation**: one block per turn. Your message, then the agent's work folded into one line ("Worked 2m · 6 files read · 2 commands · 2 files changed", open while it works, with the current step), then its answer and the files the turn changed (click one for its diff). The current plan is pinned above the input. When the agent is waiting, its prompt shows at the end of the thread (keys `1` to `9`, `Esc` to deny); typing a message instead denies it with your message as the explanation. Messages sent while the agent is busy show as waiting until it reads them. In the input: `@` to mention a project file, `/` for the agent's commands, paste or drop an image to attach it.
+- **Agents started by an agent**: when an agent starts other agents in Herdr (`herdr agent start`, or `huntawayd dispatch`, see [Skills](#skills)), they show under it in the sidebar (the arrow folds them; a child waiting for you shows on its parent), as live cards in its conversation (answer their prompts from there), and with a link back to the parent in their own conversation.
 - **Activity panel**: duration, model, tasks, tools used, recent commands, tokens, context usage, estimated cost and plan limits (Codex). The **Files** tab shows the edited files and the `git status`. The **Terminal** tab shows the Herdr pane's screen live.
 - **New session** (`⌘N`): pick the machine, the project (or a new folder), the agent, the model and the prompt.
 - **History**: every past conversation of every machine, with search, and "Resume" to restart it in Herdr.
@@ -169,6 +170,27 @@ A script is *running* while a command runs in its tab, *exited* when its shell i
 ### Terminal
 
 "Open terminal" on a project page (or `⌘K` → "Open terminal") opens a shell in a new Herdr tab, in the project directory, and shows it in the app: type directly in it (needs `--full` on paired devices). Shells opened this way are listed on the project page, to reopen or close them; closing one closes its Herdr tab.
+
+### Skills
+
+Keep the same [agent skills](https://agentskills.io) (`SKILL.md` folders: reviewer, brainstorming…) on every machine. The library is a folder on your computer, `~/huntaway-skills` by default (Settings), ideally a git repository. The **Skills** page shows each skill and whether every machine has it; with "Sync skills automatically", the app pushes new and changed skills to every machine it is connected to (paired with `--full`). Nothing is deleted on a machine unless you ask.
+
+On each machine the daemon keeps one copy per skill in `~/.config/huntaway/skills/` and links it into the agents' skill folders: `~/.claude/skills/` (Claude Code; opencode reads it too) and `~/.agents/skills/` (Codex). A skill of the same name installed by hand is left alone and shown as a conflict. Other folders: `skill_dirs` in the daemon's `config.toml`.
+
+**Orchestrator**: [`skills/orchestrator`](skills/orchestrator/SKILL.md) lets an agent split a task between several agents running next to it, each in its own Herdr pane. It relies on `huntawayd dispatch`, which picks the agent for a role, starts it, sends the task and can wait for its answer:
+
+```sh
+huntawayd dispatch --role review "Review the last commit, report bugs with file:line" --wait
+```
+
+Roles map to agents in the daemon's `config.toml`:
+
+```toml
+[routing]
+review = "codex"
+ui = "claude"
+default = "claude"
+```
 
 ## Mobile notifications when the app is closed
 
