@@ -45,6 +45,10 @@ const SCREEN_RETRY: Duration = Duration::from_millis(1500);
 /// Herdr sends lifecycle events in bursts (a new tab: pane created, agent
 /// detected, tab renamed…): wait this long after one before refreshing.
 const EVENT_SETTLE: Duration = Duration::from_millis(200);
+/// Lists re-read without an event: Herdr sends none when an agent changes
+/// conversation in the same pane (`/clear`, `/resume`), only the session id
+/// in `agent_list` changes.
+const RESYNC: Duration = Duration::from_secs(5);
 /// Blocking episodes kept for the metrics.
 const METRICS_EPISODES: usize = 10_000;
 /// Agent launches remembered per agent (parent detection).
@@ -503,8 +507,9 @@ impl Engine {
     }
 
     /// One subscription cycle: sync agents, subscribe, consume events. Status
-    /// changes are applied directly; other events refresh the lists, and a
-    /// new agent pane ends the cycle so the next one subscribes to it.
+    /// changes are applied directly; other events, and [`RESYNC`] without
+    /// any, refresh the lists. A new agent pane ends the cycle so the next one
+    /// subscribes to it.
     async fn follow_session(&self, session: &Session, client: &Client) -> herdr_client::Result<()> {
         let subscribed = self.refresh(session, client).await?;
         let mut subs: Vec<Value> =
@@ -519,8 +524,18 @@ impl Engine {
             return Ok(());
         }
 
+        let mut resync = tokio::time::Instant::now() + RESYNC;
         loop {
-            let event = sub.next().await?;
+            let event = match tokio::time::timeout_at(resync, sub.next()).await {
+                Ok(event) => event?,
+                Err(_) => {
+                    resync = tokio::time::Instant::now() + RESYNC;
+                    if !self.refresh(session, client).await?.is_subset(&subscribed) {
+                        return Ok(());
+                    }
+                    continue;
+                }
+            };
             if self.on_event(session, &event) {
                 continue;
             }
@@ -529,6 +544,7 @@ impl Engine {
             while let Ok(event) = tokio::time::timeout_at(deadline, sub.next()).await {
                 self.on_event(session, &event?);
             }
+            resync = tokio::time::Instant::now() + RESYNC;
             if !self.refresh(session, client).await?.is_subset(&subscribed) {
                 return Ok(());
             }
@@ -1810,6 +1826,24 @@ mod tests {
         // Nothing changed: nothing sent.
         engine.reconcile(&session(), &client, vec![agent_info("idle")], None, &[tab("api tests")]);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn new_session_in_the_same_pane_replaces_the_agent() {
+        let engine = engine();
+        let client = Client::new("/nonexistent/herdr.sock");
+        let with_session = |value: &str| {
+            let mut info = agent_info("idle");
+            info.agent_session = Some(herdr_client::AgentSession { agent: Some("claude".into()), kind: None, source: None, value: value.into() });
+            info
+        };
+        let instance = |engine: &Engine| engine.state.lock().unwrap().agents.get("default:w1:p1").unwrap().view.instance_id.clone();
+        engine.reconcile(&session(), &client, vec![with_session("s1")], None, &[]);
+        let before = instance(&engine);
+        // `/clear`: same pane, new conversation.
+        engine.reconcile(&session(), &client, vec![with_session("s2")], None, &[]);
+        assert_ne!(instance(&engine), before);
+        assert!(instance(&engine).ends_with("s2"));
     }
 
     #[test]
