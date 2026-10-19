@@ -170,6 +170,16 @@ fn rate_window(v: &Value) -> Option<RateWindow> {
     })
 }
 
+/// `rate_limits` of a `token_count` event payload.
+pub fn rate_limits(payload: &Value) -> Option<RateLimits> {
+    let limits = &payload["rate_limits"];
+    limits.is_object().then(|| RateLimits {
+        primary: rate_window(&limits["primary"]),
+        secondary: rate_window(&limits["secondary"]),
+        plan_type: limits["plan_type"].as_str().map(str::to_string),
+    })
+}
+
 /// `token_count` event → usage. Codex counts cached tokens inside `input_tokens`.
 fn token_usage(p: &Value, previous: Option<&Usage>) -> Option<Usage> {
     let info = &p["info"];
@@ -186,15 +196,12 @@ fn token_usage(p: &Value, previous: Option<&Usage>) -> Option<Usage> {
             + info["last_token_usage"]["output_tokens"].as_u64().unwrap_or(0);
         usage.context_window = info["model_context_window"].as_u64().or(usage.context_window);
     }
-    let limits = &p["rate_limits"];
-    if limits.is_object() {
-        usage.rate_limits = Some(RateLimits {
-            primary: rate_window(&limits["primary"]),
-            secondary: rate_window(&limits["secondary"]),
-            plan_type: limits["plan_type"].as_str().map(str::to_string),
-        });
+    let limits = rate_limits(p);
+    let has_limits = limits.is_some();
+    if has_limits {
+        usage.rate_limits = limits;
     }
-    (total.is_object() || limits.is_object()).then_some(usage)
+    (total.is_object() || has_limits).then_some(usage)
 }
 
 impl LineParser for Parser {

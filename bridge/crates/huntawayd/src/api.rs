@@ -30,6 +30,7 @@ pub struct AppState {
     pub listeners: Arc<crate::listen::Listeners>,
     pub runner: Arc<crate::runner::Runner>,
     pub skills: Arc<crate::skills::Skills>,
+    pub limits: Arc<crate::limits::Limits>,
 }
 
 type Shared = Arc<AppState>;
@@ -58,6 +59,7 @@ pub fn router(state: Shared) -> Router {
         .route("/v1/workspaces", post(create_workspace))
         .route("/v1/uploads", post(upload).layer(DefaultBodyLimit::max(crate::files::UPLOAD_MAX)))
         .route("/v1/usage", get(usage))
+        .route("/v1/limits", get(limits))
         .route("/v1/history", get(history_list))
         .route("/v1/history/{id}", get(history_get))
         .route("/v1/history/{id}/timeline", get(history_timeline))
@@ -403,6 +405,13 @@ async fn usage(State(state): State<Shared>, auth: Auth) -> ApiResult<Json<Value>
     }
     total.cost_usd = Some((cost * 10_000.0).round() / 10_000.0);
     Ok(Json(json!({ "agents": agents, "total": total })))
+}
+
+/// Plan limits of the agents on this machine (Claude, Codex).
+async fn limits(State(state): State<Shared>, auth: Auth) -> ApiResult<Json<huntaway_api::MachineLimits>> {
+    auth.require("agents.read")?;
+    state.limits.ensure_loaded().await;
+    Ok(Json(state.limits.current()))
 }
 
 // -------------------------------------------------------------- history

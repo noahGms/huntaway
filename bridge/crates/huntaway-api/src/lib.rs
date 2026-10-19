@@ -339,6 +339,44 @@ pub struct RateLimits {
     pub plan_type: Option<String>,
 }
 
+/// One window of a plan limit of this machine (`GET /v1/limits`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct LimitWindow {
+    /// `five_hour`, `week`, `week_opus`, `week_sonnet`, or `<n>m`.
+    pub id: String,
+    /// Short label: `5h`, `Week`, `Week (Opus)`.
+    pub label: String,
+    pub used_percent: f64,
+    pub window_minutes: Option<u64>,
+    /// Seconds since the epoch.
+    pub resets_at: Option<u64>,
+}
+
+/// Plan limits of one agent provider on this machine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ProviderLimits {
+    /// `claude` or `codex`.
+    pub kind: String,
+    /// Subscription (`max`, `pro`, `plus`…), when known.
+    pub plan: Option<String>,
+    pub windows: Vec<LimitWindow>,
+    /// When the values were read (seconds since the epoch).
+    pub updated_at: Option<u64>,
+    /// `api` (provider's usage endpoint) or `session` (latest session file).
+    pub source: String,
+    /// Why the values could not be refreshed (the last ones are kept).
+    pub error: Option<String>,
+}
+
+/// `GET /v1/limits` and the `limits.updated` event.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct MachineLimits {
+    pub providers: Vec<ProviderLimits>,
+}
+
 /// Token usage of one conversation, read from its transcript.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]

@@ -10,6 +10,7 @@ mod dispatch;
 mod engine;
 mod files;
 mod history;
+mod limits;
 mod listen;
 mod presence;
 mod push;
@@ -157,8 +158,10 @@ async fn run() -> Result<()> {
     let identity = Identity::load_or_create(&dir)?;
     let listen_config = config.clone();
     let skills = Arc::new(skills::Skills::new(&config));
+    let limits = limits::Limits::new(config.claude_usage_api);
     let (engine, notifications) = engine::Engine::new(config, identity.machine_id.clone());
     engine.start();
+    limits.start(engine.clone());
     let presence = Arc::new(presence::Presence::default());
     // One store for the whole daemon: device writes are serialized in memory.
     let runner = runner::Runner::new(engine.clone(), &dir);
@@ -171,7 +174,7 @@ async fn run() -> Result<()> {
         warn!(error = %e, "local token not created: the desktop app will need pairing");
     }
     let listeners = Arc::new(listen::Listeners::default());
-    let state = Arc::new(api::AppState { engine, store, identity, history: Default::default(), presence, listeners: listeners.clone(), runner, skills });
+    let state = Arc::new(api::AppState { engine, store, identity, history: Default::default(), presence, listeners: listeners.clone(), runner, skills, limits });
     let app = api::router(state).into_make_service_with_connect_info::<SocketAddr>();
     listen::run(listeners, listen_config, app).await
 }

@@ -29,6 +29,9 @@ pub struct Config {
     /// Skill folders the synced skills are linked into, per agent
     /// (default: `claude = "~/.claude/skills"`, `codex = "~/.agents/skills"`).
     pub skill_dirs: std::collections::BTreeMap<String, PathBuf>,
+    /// Read Claude's plan limits from its usage endpoint with the local
+    /// Claude login (`GET /v1/limits`).
+    pub claude_usage_api: bool,
 }
 
 impl Default for Config {
@@ -42,6 +45,7 @@ impl Default for Config {
             journal_size: 20_000,
             routing: Default::default(),
             skill_dirs: Default::default(),
+            claude_usage_api: true,
         }
     }
 }

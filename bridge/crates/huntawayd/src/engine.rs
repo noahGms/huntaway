@@ -373,6 +373,11 @@ impl Engine {
         let _ = self.tx.send(envelope);
     }
 
+    /// Some client follows the event stream.
+    pub fn has_listeners(&self) -> bool {
+        self.tx.receiver_count() > 0
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<Envelope> {
         self.tx.subscribe()
     }
