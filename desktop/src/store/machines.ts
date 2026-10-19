@@ -11,6 +11,8 @@ import { useProjects } from "./projects";
 export interface TimelineState {
   items: StoredItem[];
   hasMore: boolean;
+  /** The start of a live conversation is only in the history. */
+  olderInHistory?: boolean;
   loading: boolean;
   loaded: boolean;
   error: string | null;
@@ -303,7 +305,8 @@ export const useMachines = create<MachinesState>((set, get) => {
           // Older pages already loaded keep their own "has more".
           const keptOlder = kept.length > 0 && kept[0].n < (page.items[0]?.n ?? Infinity);
           const hasMore = older ? page.has_more : keptOlder ? base.hasMore : page.has_more;
-          return { timelines: { ...s.timelines, [key]: { items, hasMore, loading: false, loaded: true, error: null, instance } } };
+          const olderInHistory = older || !keptOlder ? !!page.older_in_history : base.olderInHistory;
+          return { timelines: { ...s.timelines, [key]: { items, hasMore, olderInHistory, loading: false, loaded: true, error: null, instance } } };
         });
         // Items emitted before the stream filter took effect: fetch them once.
         const count = k.live ? get().agent(k.machineId, k.id)?.item_count : undefined;

@@ -240,9 +240,8 @@ struct TimelineQuery {
 async fn timeline(State(state): State<Shared>, auth: Auth, Path(id): Path<String>, Query(q): Query<TimelineQuery>) -> ApiResult<Json<Value>> {
     auth.require("agents.read")?;
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
-    let items = state.engine.timeline(&id, q.before, limit).ok_or_else(ApiError::not_found)?;
-    let has_more = items.first().is_some_and(|i| i.n > 0);
-    Ok(Json(json!({ "items": items, "has_more": has_more })))
+    let (items, has_more, dropped) = state.engine.timeline(&id, q.before, limit).ok_or_else(ApiError::not_found)?;
+    Ok(Json(serde_json::to_value(huntaway_api::TimelinePage { items, has_more, older_in_history: dropped && !has_more }).unwrap()))
 }
 
 #[derive(Deserialize)]

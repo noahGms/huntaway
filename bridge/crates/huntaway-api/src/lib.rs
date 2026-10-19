@@ -209,6 +209,10 @@ pub struct StoredItem {
 pub struct TimelinePage {
     pub items: Vec<StoredItem>,
     pub has_more: bool,
+    /// Live agents: the start of the conversation is no longer held by the
+    /// daemon, only in the history.
+    #[serde(default)]
+    pub older_in_history: bool,
 }
 
 // ----------------------------------------------------------------- attention

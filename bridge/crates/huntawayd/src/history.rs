@@ -156,7 +156,7 @@ impl HistoryIndex {
         while timelines.len() > TIMELINES_KEPT {
             timelines.pop_front();
         }
-        Ok(TimelinePage { items: page, has_more })
+        Ok(TimelinePage { items: page, has_more, older_in_history: false })
     }
 }
 

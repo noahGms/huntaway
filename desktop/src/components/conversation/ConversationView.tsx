@@ -100,6 +100,7 @@ export function ConversationView({ conv }: { conv: Conversation }) {
             approval={showApproval}
             queued={queued}
             hasMore={!!timeline?.hasMore}
+            olderInHistory={!!timeline?.olderInHistory}
             loadingOlder={!!timeline?.loading}
             onTop={() => void loadTimeline(conv.key, true)}
           />
@@ -148,6 +149,7 @@ function OfflineBanner({ machine }: { machine: MachineView }) {
 /** Passed to the list header and footer, defined once so Virtuoso keeps them mounted. */
 interface ListContext {
   hasMore: boolean;
+  olderInHistory: boolean;
   loadingOlder: boolean;
   working: boolean;
   machineId: string;
@@ -157,9 +159,19 @@ interface ListContext {
 }
 
 function ListHeader({ context }: { context?: ListContext }) {
+  const agent = context?.agent;
+  const history = !context?.hasMore && context?.olderInHistory && agent?.native_session;
   return (
     <div className="flex h-10 items-end justify-center pb-1 text-[11.5px] text-faint">
-      {context?.hasMore ? context.loadingOlder ? <Spinner /> : "…" : "Start of the conversation"}
+      {context?.hasMore ? (
+        context.loadingOlder ? <Spinner /> : "…"
+      ) : history ? (
+        <button onClick={() => useUi.getState().select(historyKey(context.machineId, `${agent.kind}:${agent.native_session}`))} className="hover:text-text">
+          Earlier messages are in the history →
+        </button>
+      ) : (
+        "Start of the conversation"
+      )}
     </div>
   );
 }
@@ -193,6 +205,7 @@ function TimelineList({
   approval,
   queued,
   hasMore,
+  olderInHistory,
   loadingOlder,
   onTop,
 }: {
@@ -206,6 +219,7 @@ function TimelineList({
   approval: boolean;
   queued: QueuedMessage[];
   hasMore: boolean;
+  olderInHistory: boolean;
   loadingOlder: boolean;
   onTop: () => void;
 }) {
@@ -222,8 +236,8 @@ function TimelineList({
   const prepended = Math.max(0, rows.findIndex((r) => r.key === anchor.current!.key));
   const firstItemIndex = BASE_INDEX - prepended;
   const context = useMemo(
-    () => ({ hasMore, loadingOlder, working, machineId, agent, approval, queued }),
-    [hasMore, loadingOlder, working, machineId, agent, approval, queued],
+    () => ({ hasMore, olderInHistory, loadingOlder, working, machineId, agent, approval, queued }),
+    [hasMore, olderInHistory, loadingOlder, working, machineId, agent, approval, queued],
   );
 
   // Rows are measured after they render (markdown, open work blocks), so the

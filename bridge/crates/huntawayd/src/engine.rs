@@ -405,10 +405,13 @@ impl Engine {
         self.state.lock().unwrap().agents.get(id).map(|a| a.view.clone())
     }
 
-    /// Items with `n < before` (newest first page when `before` is None), oldest first.
-    pub fn timeline(&self, id: &str, before: Option<u64>, limit: usize) -> Option<Vec<StoredItem>> {
+    /// Items with `n < before` (newest first page when `before` is None),
+    /// oldest first, whether older items are still held, and whether older
+    /// ones were dropped (`items_per_agent`; the history still has them).
+    pub fn timeline(&self, id: &str, before: Option<u64>, limit: usize) -> Option<(Vec<StoredItem>, bool, bool)> {
         let state = self.state.lock().unwrap();
         let entry = state.agents.get(id)?;
+        let oldest = entry.items.front().map(|i| i.n);
         let mut page: Vec<StoredItem> = entry
             .items
             .iter()
@@ -418,7 +421,10 @@ impl Engine {
             .cloned()
             .collect();
         page.reverse();
-        Some(page)
+        let first = page.first().map(|i| i.n).or(before);
+        let has_more = matches!((first, oldest), (Some(f), Some(o)) if f > o);
+        let dropped = oldest.is_some_and(|o| o > 0);
+        Some((page, has_more, dropped))
     }
 
     // ---------------------------------------------------------- discovery
@@ -658,7 +664,10 @@ impl Engine {
                 let id = entry.view.id.clone();
                 // After a crash Herdr keeps the pane, now a plain shell: new occupant.
                 if let Some(old) = state.agents.get(&id) {
-                    if crashed(old) {
+                    // Same terminal, same agent, new session id: the user
+                    // switched conversation (`/clear`, `/resume`), not a crash.
+                    let switched = old.info.terminal_id == entry.info.terminal_id && old.info.agent == entry.info.agent && entry.info.agent.is_some();
+                    if crashed(old) && !switched {
                         notifications.push(build_notification(old, "error"));
                     }
                 }
