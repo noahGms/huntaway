@@ -56,9 +56,36 @@ const LAUNCHES_KEPT: usize = 64;
 /// A message sent from Huntaway that never shows up in the transcript is
 /// dropped from `queued` after this long.
 const QUEUED_MAX_AGE_SECS: u64 = 15 * 60;
-/// After a queued message is typed, the agent takes a moment to report
-/// `working`: the next one waits at least this long.
+/// After a queued message is typed, the next one waits for the agent to
+/// work on it and finish; at least this long, in case it reports no work.
 const QUEUE_GAP: Duration = Duration::from_secs(3);
+/// Agents without a transcript: at most this long when Herdr never reports
+/// the agent working.
+const QUEUE_GAP_MAX: Duration = Duration::from_secs(60);
+/// Agents with a transcript but no turn end recorded: Herdr must say the
+/// agent is free for this long.
+const QUEUE_FREE_FOR: Duration = Duration::from_secs(15);
+
+/// A message typed into the agent is still being worked on. Herdr's status
+/// can say `done` while Claude still writes: with a transcript, the turn end
+/// it records decides, or Herdr staying free for [`QUEUE_FREE_FOR`]
+/// (interrupted turn, message swallowed by a dialog).
+fn awaiting_turn(entry: &AgentEntry) -> bool {
+    let Some(t) = entry.delivered_at else { return false };
+    let free_for = (now_ms() / 1000).saturating_sub(entry.status_since_secs);
+    let over = if entry.tail.is_some() {
+        entry.turn_ended_since_delivery || (!is_busy(&entry.status) && free_for >= QUEUE_FREE_FOR.as_secs())
+    } else {
+        (entry.worked_since_delivery && !is_busy(&entry.status)) || t.elapsed() >= QUEUE_GAP_MAX
+    };
+    !(over && t.elapsed() >= QUEUE_GAP)
+}
+
+fn mark_delivered(entry: &mut AgentEntry) {
+    entry.delivered_at = Some(Instant::now());
+    entry.worked_since_delivery = false;
+    entry.turn_ended_since_delivery = false;
+}
 
 fn is_busy(status: &str) -> bool {
     matches!(status, "working" | "blocked")
@@ -233,8 +260,11 @@ struct AgentEntry {
     block_seq: u64,
     /// Herdr agents this agent started or prompted, with the call timestamp.
     launches: Vec<(String, AgentLaunch)>,
-    /// Last time a queued message was typed into the agent.
+    /// Last time a queued message was typed into the agent, and whether the
+    /// agent worked since.
     delivered_at: Option<Instant>,
+    worked_since_delivery: bool,
+    turn_ended_since_delivery: bool,
     /// First message of the conversation (matches a parent's prompt).
     first_request: Option<String>,
 }
@@ -771,6 +801,8 @@ impl Engine {
             block_seq: 0,
             launches: Vec::new(),
             delivered_at: None,
+            worked_since_delivery: false,
+            turn_ended_since_delivery: false,
             first_request: None,
         };
         // Load history without notifications.
@@ -954,12 +986,16 @@ impl Engine {
                 entry.view.queued.retain(|q| q.state == "waiting" || now_secs.saturating_sub(q.at) < QUEUED_MAX_AGE_SECS);
                 // The agent is free: type the next waiting message.
                 let free = matches!(entry.status.as_str(), "idle" | "done") && entry.raw_status == entry.status && !matches!(entry.view.attention, Attention::Blocked(_));
-                if free && entry.delivered_at.is_none_or(|t| t.elapsed() >= QUEUE_GAP) {
+                if is_busy(&entry.status) {
+                    entry.worked_since_delivery = true;
+                }
+                if free && !awaiting_turn(entry) {
                     if let Some(q) = entry.view.queued.iter_mut().find(|q| q.state == "waiting") {
                         q.state = "sent".into();
                         q.at = now_secs;
-                        entry.delivered_at = Some(Instant::now());
-                        deliveries.push(Delivery { agent: id.clone(), client: entry.client.clone(), pane: entry.view.pane_id.clone(), kind: entry.view.kind.clone(), queued: q.id.clone(), text: q.text.clone() });
+                        let (queued, text) = (q.id.clone(), q.text.clone());
+                        mark_delivered(entry);
+                        deliveries.push(Delivery { agent: id.clone(), client: entry.client.clone(), pane: entry.view.pane_id.clone(), kind: entry.view.kind.clone(), queued, text });
                     }
                 }
 
@@ -1057,7 +1093,10 @@ impl Engine {
         let mut stored = Vec::with_capacity(items.len());
         for item in items {
             match &item {
-                TimelineItem::TurnEnded { .. } if live => entry.pending_done = Some(Instant::now()),
+                TimelineItem::TurnEnded { .. } if live => {
+                    entry.pending_done = Some(Instant::now());
+                    entry.turn_ended_since_delivery = true;
+                }
                 TimelineItem::UserMessage { text, .. } => {
                     entry.pending_done = None;
                     entry.interrupted_by_huntaway = false;
@@ -1121,8 +1160,10 @@ impl Engine {
         if status == "blocked" {
             return Err(ActionError::new(409, "agent_blocked", "the agent is waiting for an answer: use choice or deny"));
         }
-        let waiting = self.state.lock().unwrap().agents.get(id).is_some_and(|e| e.view.queued.iter().any(|q| q.state == "waiting"));
-        let queue = !now && (status == "working" || waiting);
+        // Herdr's status lags: a message typed a moment ago may still be
+        // being worked on while it says `done`.
+        let held = self.state.lock().unwrap().agents.get(id).is_some_and(|e| e.view.queued.iter().any(|q| q.state == "waiting") || awaiting_turn(e));
+        let queue = !now && (status == "working" || held);
         if !queue {
             type_message(&client, &pane, &kind, text).await?;
         }
@@ -1138,7 +1179,7 @@ impl Engine {
                     state: if queue { "waiting" } else { "sent" }.into(),
                 });
                 if !queue {
-                    entry.delivered_at = Some(Instant::now());
+                    mark_delivered(entry);
                 }
                 entry.view.clone()
             })
@@ -1994,8 +2035,15 @@ mod tests {
         assert_eq!(deliveries.iter().map(|d| d.text.as_str()).collect::<Vec<_>>(), ["first"]);
         let states: Vec<String> = engine.state.lock().unwrap().agents[id].view.queued.iter().map(|q| q.state.clone()).collect();
         assert_eq!(states, ["sent", "waiting"]);
-        // One at a time: the next waits for the agent to work and finish.
+        // One at a time: the next waits for the agent to work on it and finish.
         assert!(engine.tick().2.is_empty());
+        engine.state.lock().unwrap().agents.get_mut(id).unwrap().delivered_at = Some(Instant::now() - QUEUE_GAP);
+        assert!(engine.tick().2.is_empty(), "the agent has not worked on the first one yet");
+        engine.reconcile(&session(), &client, vec![agent_info("working")], None, &[]);
+        engine.tick();
+        engine.reconcile(&session(), &client, vec![agent_info("idle")], None, &[]);
+        engine.state.lock().unwrap().agents.get_mut(id).unwrap().raw_since = Instant::now() - SETTLE;
+        assert_eq!(engine.tick().2.iter().map(|d| d.text.as_str()).collect::<Vec<_>>(), ["second"]);
     }
 
     #[test]
