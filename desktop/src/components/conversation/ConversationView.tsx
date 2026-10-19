@@ -223,11 +223,23 @@ function TimelineList({
     [hasMore, loadingOlder, working, machineId, agent, approval, queued],
   );
 
+  // Rows are measured after they render (markdown, open work blocks), so the
+  // first position is only an estimate: keep pinning the bottom after opening
+  // a conversation until the user scrolls.
+  const settling = useRef(true);
+  useEffect(() => {
+    settling.current = true;
+  }, [convKey]);
+  const toBottom = () => ref.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER });
+  const stopSettling = () => {
+    settling.current = false;
+  };
+
   // The prompt or a queued message appearing must not push the last
   // messages out of view: stay at the bottom if we were there.
   useEffect(() => {
-    if (!atBottomRef.current) return;
-    const frame = requestAnimationFrame(() => ref.current?.scrollToIndex({ index: "LAST", align: "end" }));
+    if (!atBottomRef.current && !settling.current) return;
+    const frame = requestAnimationFrame(toBottom);
     return () => cancelAnimationFrame(frame);
   }, [working, approval, queued.length]);
 
@@ -240,9 +252,17 @@ function TimelineList({
         data={rows}
         context={context}
         firstItemIndex={firstItemIndex}
-        initialTopMostItemIndex={Math.max(0, rows.length - 1)}
+        initialTopMostItemIndex={{ index: "LAST", align: "end" }}
         computeItemKey={(_, row) => row.key}
         followOutput={(bottom) => (bottom ? "smooth" : false)}
+        // Rows growing (a long answer rendered, the live work block) keep the bottom in view.
+        totalListHeightChanged={() => {
+          if (settling.current || atBottomRef.current) requestAnimationFrame(toBottom);
+        }}
+        onWheel={stopSettling}
+        onTouchMove={stopSettling}
+        onKeyDown={stopSettling}
+        onPointerDown={stopSettling}
         atBottomStateChange={setAtBottom}
         atBottomThreshold={80}
         startReached={() => hasMore && !loadingOlder && onTop()}
@@ -256,7 +276,7 @@ function TimelineList({
       />
       {!atBottom && (
         <button
-          onClick={() => ref.current?.scrollToIndex({ index: "LAST", behavior: "smooth" })}
+          onClick={() => ref.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "smooth" })}
           className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-surface-high px-3 py-1.5 text-[12px] text-muted shadow-lg hover:text-text"
         >
           <ArrowDown size={13} /> Latest messages
