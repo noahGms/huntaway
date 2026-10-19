@@ -54,7 +54,6 @@ function visible(it: Item): boolean {
     case "user_message":
     case "question_asked":
     case "notice":
-    case "away_summary":
       return true;
     case "tool_call":
       return it.kind === "agent";
@@ -155,9 +154,10 @@ export function buildTurns(items: Item[], live: boolean): TurnRow[] {
   const results = new Map<string, ToolResultItem>();
   for (const it of items) if (it.type === "tool_result") results.set(it.tool_use_id, it);
 
-  // Segments start at each user message.
+  // Segments start at each user message. Away summaries show as a banner.
   const segments: Item[][] = [];
   for (const it of items) {
+    if (it.type === "away_summary") continue;
     if (it.type === "user_message" || segments.length === 0) segments.push([]);
     segments[segments.length - 1].push(it);
   }
@@ -201,9 +201,6 @@ export function buildTurns(items: Item[], live: boolean): TurnRow[] {
             break;
           case "notice":
             shown.push({ at: j, row: { kind: "notice", key, item: it } });
-            break;
-          case "away_summary":
-            shown.push({ at: j, row: { kind: "away", key, item: it } });
             break;
           case "tool_call":
             shown.push({ at: j, row: { kind: "agent", key, call: it, result: results.get(it.tool_use_id) } });

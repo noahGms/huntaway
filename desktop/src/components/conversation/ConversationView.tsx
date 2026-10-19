@@ -18,9 +18,12 @@ import { AgentIcon, Badge, attentionTone } from "../ui/Status";
 import { ApprovalCard } from "./ApprovalCard";
 import { Composer } from "./Composer";
 import { buildTurns, type TurnRow } from "./turns";
-import { PlanBar, QueuedMessages, TurnRowView } from "./TurnRows";
+import { AwayBar, PlanBar, QueuedMessages, TurnRowView } from "./TurnRows";
 
 const BASE_INDEX = 1_000_000;
+
+/** Away summaries closed by the user (`<conversation>:<item n>`), until restart. */
+const dismissedAway = new Set<string>();
 
 export function ConversationView({ conv }: { conv: Conversation }) {
   const timeline = useMachines((s) => s.timelines[conv.key]);
@@ -55,10 +58,31 @@ export function ConversationView({ conv }: { conv: Conversation }) {
     return null;
   }, [items]);
   const showPlan = !!agent && !!plan?.length && plan.some((t) => t.status !== "completed");
+  // Latest recap, until the user writes again or closes it.
+  const [, setDismissed] = useState(0);
+  const away = useMemo(() => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.type === "user_message") return null;
+      if (it.type === "away_summary") return it;
+    }
+    return null;
+  }, [items]);
+  const awayId = away ? `${conv.key}:${away.n}` : null;
 
   return (
     <div className="flex h-full min-w-0 flex-col">
       <Header conv={conv} />
+      {away && awayId && !dismissedAway.has(awayId) && (
+        <AwayBar
+          key={awayId}
+          text={away.text}
+          onDismiss={() => {
+            dismissedAway.add(awayId);
+            setDismissed((d) => d + 1);
+          }}
+        />
+      )}
       <div className="relative min-h-0 flex-1">
         {!timeline?.loaded && <div className="flex h-full items-center justify-center text-muted"><Spinner className="h-5 w-5" /></div>}
         {timeline?.loaded && timeline.error && items.length === 0 && (

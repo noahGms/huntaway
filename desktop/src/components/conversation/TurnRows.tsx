@@ -1,4 +1,4 @@
-import { Bot, ChevronRight, Clock, FileCode2, FilePen, ListChecks, Loader2, Workflow } from "lucide-react";
+import { Bot, ChevronRight, Clock, FileCode2, FilePen, History, ListChecks, Loader2, Workflow, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { AgentView, QueuedMessage, Todo } from "../../api/types";
 import { agentTitle, liveKey, statusLabel } from "../../lib/conversations";
@@ -8,6 +8,7 @@ import { useUi } from "../../store/ui";
 import { AgentIcon, StatusDot } from "../ui/Status";
 import { ApprovalCard } from "./ApprovalCard";
 import type { ToolCallItem, ToolResultItem } from "./rows";
+import { Markdown } from "./Markdown";
 import { CompactRows, PlanCard, RowView } from "./TimelineRows";
 import { statsLabel, type FileSummary, type TurnRow } from "./turns";
 
@@ -226,6 +227,31 @@ export function QueuedMessages({ queued, working }: { queued: QueuedMessage[]; w
 }
 
 /** Latest plan, pinned above the composer while it has unfinished tasks. */
+/** The agent's recap after a pause, above the conversation. */
+export function AwayBar({ text, onDismiss }: { text: string; onDismiss: () => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border-b border-border bg-surface px-6 py-1.5">
+      <div className="flex items-center gap-2 text-[12.5px]">
+        <button onClick={() => setOpen(!open)} className="flex min-w-0 flex-1 items-center gap-2 text-left" aria-expanded={open}>
+          <History size={13} className="shrink-0 text-muted" />
+          <span className="shrink-0 text-muted">While you were away</span>
+          {!open && <span className="min-w-0 flex-1 truncate text-text">{firstLine(text)}</span>}
+          <ChevronRight size={13} className={`ml-auto shrink-0 text-faint transition-transform ${open ? "-rotate-90" : "rotate-90"}`} />
+        </button>
+        <button onClick={onDismiss} className="shrink-0 text-faint hover:text-text" aria-label="Dismiss">
+          <X size={13} />
+        </button>
+      </div>
+      {open && (
+        <div className="selectable max-h-[40vh] overflow-y-auto pb-1 pt-1.5">
+          <Markdown text={text} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function PlanBar({ todos }: { todos: Todo[] }) {
   const [open, setOpen] = useState(false);
   const done = todos.filter((t) => t.status === "completed").length;
