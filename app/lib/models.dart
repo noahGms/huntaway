@@ -72,13 +72,21 @@ class Attention {
         j['reason'] as String?,
       );
 
-  /// Inbox order: blocked first (PRD §11).
+  /// Waiting on a prompt on screen (approval, menu, plan): nothing moves
+  /// until the user answers. A turn that ended on a plain-text question is
+  /// not one: it is the user's turn.
+  bool get needsYou => status == AttentionStatus.blocked && reason != 'explicit_question';
+
+  /// The last turn ended on a question in the agent's text.
+  bool get askedYou => status == AttentionStatus.blocked && reason == 'explicit_question';
+
+  /// Inbox order: prompts first (PRD §11), then questions in the text.
   int get priority => switch (status) {
-        AttentionStatus.blocked => 0,
-        AttentionStatus.working => 1,
-        AttentionStatus.done => 2,
-        AttentionStatus.idle => 3,
-        AttentionStatus.unknown => 4,
+        AttentionStatus.blocked => needsYou ? 0 : 1,
+        AttentionStatus.working => 2,
+        AttentionStatus.done => 3,
+        AttentionStatus.idle => 4,
+        AttentionStatus.unknown => 5,
       };
 
   String get label => switch (status) {
@@ -86,7 +94,7 @@ class Attention {
             'approval' => 'Approval',
             'question' => 'Question',
             'plan' => 'Plan to review',
-            'explicit_question' => 'Question',
+            'explicit_question' => 'Asked you',
             _ => 'Waiting',
           },
         AttentionStatus.working => 'Working',
@@ -210,6 +218,7 @@ class Agent {
     this.parentId,
     this.children = const [],
     this.queued = const [],
+    this.permissionMode,
   });
 
   final String machineId;
@@ -245,6 +254,9 @@ class Agent {
   /// Messages sent from Huntaway that the transcript does not show yet.
   final List<QueuedMessage> queued;
 
+  /// Claude permission mode (`default`, `acceptEdits`, `plan`, `auto`…), when known.
+  final String? permissionMode;
+
   /// Unique across machines.
   String get key => '$machineId/$id';
 
@@ -279,6 +291,7 @@ class Agent {
           for (final q in (j['queued'] as List?) ?? const [])
             QueuedMessage.fromJson((q as Map).cast<String, dynamic>())
         ],
+        permissionMode: j['permission_mode'] as String?,
       );
 }
 
@@ -353,6 +366,12 @@ class TimelineItem {
   /// Agent started or prompted by a tool call of kind `agent`.
   AgentLaunch? get agent =>
       data['agent'] is Map ? AgentLaunch.fromJson((data['agent'] as Map).cast<String, dynamic>()) : null;
+
+  /// Markdown of a plan proposed for review (Claude `ExitPlanMode`).
+  String? get plan {
+    final p = (data['plan'] as String?)?.trim();
+    return p == null || p.isEmpty ? null : p;
+  }
 
   /// File change carried by an edit, for the diff preview.
   Map<String, dynamic>? get change => data['change'] is Map ? (data['change'] as Map).cast<String, dynamic>() : null;

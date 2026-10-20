@@ -126,6 +126,16 @@ class AgentLaunchEntry extends Entry {
   String get id => 'a${call.n}';
 }
 
+/// A plan proposed for review, with the review once given.
+class PlanEntry extends Entry {
+  PlanEntry(this.call, {this.result});
+  final TimelineItem call;
+  final TimelineItem? result;
+
+  @override
+  String get id => 'p${call.n}';
+}
+
 /// A structured question, with its answer once given.
 class QuestionEntry extends Entry {
   QuestionEntry(this.item, {this.result});
@@ -223,6 +233,8 @@ void _turn(List<Entry> entries, List<TimelineItem> turn, {required bool live}) {
         replies.add(item);
       case 'tool_call' when item.kind == 'question':
         shown.add(QuestionEntry(item, result: results[item.data['tool_use_id']]));
+      case 'tool_call' when item.kind == 'plan' && item.plan != null:
+        shown.add(PlanEntry(item, result: results[item.data['tool_use_id']]));
       case 'tool_call' when item.kind == 'agent':
         work.addAll(replies);
         replies.clear();

@@ -433,6 +433,75 @@ class _ChangesTileState extends State<ChangesTile> {
   }
 }
 
+/// A plan the agent proposed, folded past a few lines; tap to unfold.
+class PlanTile extends StatefulWidget {
+  const PlanTile(this.entry, {super.key});
+  final PlanEntry entry;
+
+  @override
+  State<PlanTile> createState() => _PlanTileState();
+}
+
+class _PlanTileState extends State<PlanTile> {
+  late bool _open = widget.entry.result != null && (widget.entry.call.plan ?? '').split('\n').length <= 16;
+
+  @override
+  Widget build(BuildContext context) {
+    final r = widget.entry.result;
+    final plan = widget.entry.call.plan ?? '';
+    final (status, color) = r == null
+        ? ('Waiting for review', HuntawayColors.blocked)
+        : r.rejected
+            ? ('Kept planning', HuntawayColors.blocked)
+            : r.isError
+                ? ('Not applied', HuntawayColors.muted)
+                : ('Approved', HuntawayColors.done);
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 2),
+      decoration: BoxDecoration(
+        color: HuntawayColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: HuntawayColors.border),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => setState(() => _open = !_open),
+          onLongPress: () {
+            Clipboard.setData(ClipboardData(text: plan));
+            HapticFeedback.selectionClick();
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Plan copied')));
+          },
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+            child: Row(children: [
+              const Icon(Icons.checklist, size: 16, color: HuntawayColors.muted),
+              const SizedBox(width: 8),
+              const Expanded(child: Text('Proposed plan', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500))),
+              Text(status, style: TextStyle(fontSize: 12, color: color)),
+              const SizedBox(width: 4),
+              Icon(_open ? Icons.expand_less : Icons.expand_more, size: 18, color: HuntawayColors.faint),
+            ]),
+          ),
+        ),
+        const Divider(height: 1, color: HuntawayColors.border),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+          child: _open
+              ? MarkdownBody(data: plan, selectable: true, styleSheet: markdownStyle(context))
+              : GestureDetector(
+                  onTap: () => setState(() => _open = true),
+                  child: Text(plan.replaceAll(RegExp(r'^#+\s*', multiLine: true), ''),
+                      maxLines: 4,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 13.5, height: 1.4, color: HuntawayColors.muted)),
+                ),
+        ),
+      ]),
+    );
+  }
+}
+
 /// A structured question of the agent, inline, with its answer.
 class QuestionTile extends StatelessWidget {
   const QuestionTile(this.entry, {super.key});
@@ -491,7 +560,7 @@ class AgentLaunchCard extends StatelessWidget {
     final child = this.child;
     final kind = launch.kind ?? child?.kind ?? '';
     final name = launch.name ?? child?.name ?? (kind.isEmpty ? 'Agent' : kind[0].toUpperCase() + kind.substring(1));
-    final blocked = child?.attention.status == AttentionStatus.blocked;
+    final blocked = child?.attention.needsYou ?? false;
     final prompt = launch.prompt?.trim();
     return Material(
       color: HuntawayColors.surface,

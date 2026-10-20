@@ -153,6 +153,7 @@ ThemeData huntawayTheme() {
 }
 
 Color attentionColor(Attention a) => switch (a.status) {
+      AttentionStatus.blocked when a.askedYou => HuntawayColors.done,
       AttentionStatus.blocked => HuntawayColors.blocked,
       AttentionStatus.working => HuntawayColors.working,
       AttentionStatus.done => HuntawayColors.done,
@@ -173,7 +174,7 @@ class _StatusDotState extends State<StatusDot> with SingleTickerProviderStateMix
   late final _pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 1400));
 
   bool get _live =>
-      widget.attention.status == AttentionStatus.working || widget.attention.status == AttentionStatus.blocked;
+      widget.attention.status == AttentionStatus.working || widget.attention.needsYou;
 
   @override
   void initState() {

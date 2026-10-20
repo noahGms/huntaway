@@ -54,10 +54,14 @@ class _InboxScreenState extends State<InboxScreen> {
     // Agents started by another one show under it; a parent goes where its
     // most urgent child would.
     final roots = nestAgents(agents);
-    List<AgentNode> having(Set<AttentionStatus> s) => roots.where((n) => s.contains(n.urgent.status)).toList();
-    final blocked = having({AttentionStatus.blocked});
+    // Prompts on screen need you; finished turns you haven't seen (or that
+    // asked something in their text) are your turn.
+    final blocked = roots.where((n) => n.urgent.needsYou).toList();
+    bool yours(AgentNode n) => !n.urgent.needsYou && n.urgent.status != AttentionStatus.working && (n.urgent.askedYou || model.isUnread(n.agent));
+    final yourTurn = roots.where(yours).toList();
+    List<AgentNode> having(Set<AttentionStatus> s) => roots.where((n) => !n.urgent.needsYou && !yours(n) && s.contains(n.urgent.status)).toList();
     final working = having({AttentionStatus.working});
-    final done = having({AttentionStatus.done});
+    final done = having({AttentionStatus.done, AttentionStatus.blocked});
     final idle = having({AttentionStatus.idle, AttentionStatus.unknown});
     final connecting = model.connections.any((c) => c.status == ConnectionStatus.connecting);
     String? machineOf(Agent a) => model.multiMachine && _machine == null ? model.connection(a.machineId)?.machine.name : null;
@@ -115,6 +119,10 @@ class _InboxScreenState extends State<InboxScreen> {
             if (blocked.isNotEmpty) ...[
               _SectionHeader('Needs you', blocked.length, color: HuntawayColors.blocked),
               for (final n in blocked) AgentTree(n, key: ValueKey(n.agent.key), machine: machineOf(n.agent), cards: true),
+            ],
+            if (yourTurn.isNotEmpty) ...[
+              _SectionHeader('Your turn', yourTurn.length, color: HuntawayColors.done),
+              _Group([for (final n in yourTurn) AgentTree(n, key: ValueKey(n.agent.key), machine: machineOf(n.agent))]),
             ],
             if (working.isNotEmpty) ...[
               _SectionHeader('Working', working.length),
@@ -318,7 +326,7 @@ class _AgentTreeState extends State<AgentTree> {
     if (widget.cards) {
       self = Padding(
         padding: EdgeInsets.fromLTRB(12.0 + 20 * widget.depth, 0, 12, 8),
-        child: agent.attention.status == AttentionStatus.blocked
+        child: agent.attention.needsYou
             ? BlockedCard(agent, machine: widget.machine, childCount: count, expanded: expanded, onToggle: toggle)
             : Card(
                 clipBehavior: Clip.antiAlias,
@@ -363,7 +371,7 @@ class _ChildToggle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final urgent = attention?.status == AttentionStatus.blocked;
+    final urgent = attention?.needsYou ?? false;
     final color = urgent ? HuntawayColors.blocked : HuntawayColors.muted;
     return InkWell(
       onTap: onTap,
@@ -663,7 +671,7 @@ class _MachineHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final online = c.status == ConnectionStatus.online;
     final agents = c.agents.values;
-    final waiting = agents.where((a) => a.attention.status == AttentionStatus.blocked).length;
+    final waiting = agents.where((a) => a.attention.needsYou).length;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
       child: Row(children: [

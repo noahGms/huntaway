@@ -127,6 +127,13 @@ class BridgeClient {
 
   Future<void> sendQueuedNow(String agentId, String queuedId) => _send('POST', '/v1/agents/$agentId/queue/$queuedId/send');
 
+  /// Switches a Claude agent's permission mode (`default`, `acceptEdits`,
+  /// `plan`, `auto`). Returns the mode reached.
+  Future<String> setMode(String agentId, String mode) async {
+    final r = await _send('POST', '/v1/agents/$agentId/mode', body: {'mode': mode});
+    return (r is Map ? r['mode'] as String? : null) ?? mode;
+  }
+
   /// Sends Esc. The bridge refuses with `agent_blocked` while the agent
   /// waits on a prompt (Esc would deny it), unless [force].
   Future<void> interrupt(String agentId, {bool force = false}) =>

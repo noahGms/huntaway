@@ -9,6 +9,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'api.dart';
 import 'cache.dart';
+import 'seen.dart';
 import 'models.dart';
 
 enum ConnectionStatus { connecting, online, offline }
@@ -605,6 +606,7 @@ class AppModel extends ChangeNotifier {
   static const _key = 'huntaway.machines.v1';
   final FlutterSecureStorage _storage;
   final _cache = TimelineCache();
+  final _seen = SeenStore();
   final List<MachineConnection> connections = [];
   final _notifications = StreamController<AgentNotification>.broadcast();
   bool loaded = false;
@@ -612,6 +614,7 @@ class AppModel extends ChangeNotifier {
   Stream<AgentNotification> get notifications => _notifications.stream;
 
   Future<void> load() async {
+    await _seen.load();
     final raw = await _storage.read(key: _key);
     if (raw != null) {
       for (final m in jsonDecode(raw) as List) {
@@ -709,6 +712,23 @@ class AppModel extends ChangeNotifier {
       }();
 
   bool get multiMachine => connections.length > 1;
+
+  /// The agent's last turn ended after its conversation was last on screen.
+  /// Never seen: unread only while it just finished (done or asking), so a
+  /// first launch doesn't light up every old conversation.
+  bool isUnread(Agent a) {
+    final at = a.lastActivityAt;
+    if (at == null || a.attention.needsYou || a.attention.status == AttentionStatus.working) return false;
+    final seen = _seen[a.key];
+    if (seen == null) return a.attention.status == AttentionStatus.done || a.attention.askedYou;
+    return at.isAfter(seen);
+  }
+
+  /// The agent's conversation is on screen: read up to its last activity.
+  void markSeen(Agent a) {
+    final at = a.lastActivityAt;
+    if (at != null && _seen.mark(a.key, at)) _changed();
+  }
 
   @override
   void dispose() {

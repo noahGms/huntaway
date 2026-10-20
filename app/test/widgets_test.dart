@@ -87,13 +87,30 @@ void main() {
     await tester.pumpWidget(host(model, const InboxScreen()));
     expect(find.text('NEEDS YOU'), findsOneWidget);
     expect(find.text('WORKING'), findsOneWidget);
-    expect(find.text('DONE'), findsOneWidget);
+    // Finished and never opened here: unread.
+    expect(find.text('YOUR TURN'), findsOneWidget);
     expect(find.text('Wants to use Bash'), findsOneWidget);
     expect(find.text('npm run migrate'), findsOneWidget);
     expect(find.text('Approve'), findsOneWidget);
     final blockedY = tester.getTopLeft(find.text('NEEDS YOU')).dy;
-    final doneY = tester.getTopLeft(find.text('DONE')).dy;
+    final doneY = tester.getTopLeft(find.text('YOUR TURN')).dy;
     expect(blockedY, lessThan(doneY));
+  });
+
+  testWidgets('A turn ending on a question is your turn, not a prompt; seen, it is done', (tester) async {
+    final (model, c) = fixture();
+    c.agents.remove('default:w1:p1');
+    c.agents['default:w4:p1'] = Agent.fromJson('m1', agentJson('default:w4:p1', {'status': 'blocked', 'reason': 'explicit_question'}, summary: 'Shall I commit?'));
+    await tester.pumpWidget(host(model, const InboxScreen()));
+    expect(find.text('NEEDS YOU'), findsNothing);
+    expect(find.text('YOUR TURN'), findsOneWidget);
+    expect(model.agents.first.attention.priority, 1);
+
+    final done = c.agents['default:w3:p1']!;
+    model.markSeen(done);
+    expect(model.isUnread(done), isFalse);
+    await tester.pump();
+    expect(find.text('DONE'), findsOneWidget);
   });
 
   testWidgets('Agent screen shows the turn, its folded work and the approval card', (tester) async {

@@ -118,6 +118,19 @@ void main() {
       expect((entries[3] as QuestionEntry).result!.summary, 'Secure storage');
     });
 
+    test('shows a proposed plan with its review', () {
+      final entries = buildTurns([
+        at(0, 'user_message', '00:00Z', {'text': 'Plan the fix'}),
+        at(1, 'tool_call', '00:01Z', {'kind': 'file_read', 'summary': 'a.rs', 'tool_use_id': 'r1'}),
+        at(2, 'tool_call', '00:02Z', {'kind': 'plan', 'name': 'ExitPlanMode', 'summary': 'Plan proposed', 'tool_use_id': 'p1', 'plan': '# Fix\n1. Patch'}),
+        at(3, 'tool_result', '00:03Z', {'tool_use_id': 'p1', 'summary': 'User has approved your plan.'}),
+      ]);
+      expect(entries.map((e) => e.runtimeType.toString()).toList(), ['MessageEntry', 'WorkEntry', 'PlanEntry']);
+      final plan = entries[2] as PlanEntry;
+      expect(plan.call.plan, '# Fix\n1. Patch');
+      expect(plan.result!.rejected, isFalse);
+    });
+
     test('flags rejected tools', () {
       final entries = buildTurns([
         item(0, 'tool_call', {'kind': 'command', 'summary': 'rm x', 'tool_use_id': 't1'}),

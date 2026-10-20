@@ -22,9 +22,8 @@ class AgentNode {
     return best;
   }
 
-  /// An agent under this one is blocked.
-  bool get childNeedsAttention =>
-      children.any((c) => c.agent.attention.status == AttentionStatus.blocked || c.childNeedsAttention);
+  /// An agent under this one waits on a prompt.
+  bool get childNeedsAttention => children.any((c) => c.agent.attention.needsYou || c.childNeedsAttention);
 }
 
 /// Nests [agents] under their parent when the parent is in the list too

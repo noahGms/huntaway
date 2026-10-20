@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../api.dart';
 import '../models.dart';
@@ -169,6 +170,11 @@ class _AgentScreenState extends State<AgentScreen> {
     });
   }
 
+  Future<void> _setMode(MachineConnection c, Agent agent, String mode) async {
+    if (mode == agent.permissionMode) return;
+    await _run(() => c.client.setMode(agent.id, mode));
+  }
+
   /// Esc. While the agent waits on a prompt, Esc denies it: the bridge
   /// refuses unless the user confirms.
   Future<void> _interrupt(MachineConnection c, Agent agent) async {
@@ -221,6 +227,13 @@ class _AgentScreenState extends State<AgentScreen> {
       );
 
   Widget _screen(AppModel model, MachineConnection c, Agent agent, TimelineState timeline) {
+    // On screen with the app in front: read up to its last activity.
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    if (lifecycle == null || lifecycle == AppLifecycleState.resumed) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) model.markSeen(agent);
+      });
+    }
     final working = agent.attention.status == AttentionStatus.working;
     final entries = _entriesOf(timeline, live: working);
     // Newest first, like the entries (the list is reversed).
@@ -230,7 +243,7 @@ class _AgentScreenState extends State<AgentScreen> {
     final canWrite = c.machine.can('agents.message');
     final pending = agent.interaction != null && agent.interaction!.reason != 'explicit_question';
     final answered = c.answered(agent);
-    final blocked = agent.attention.status == AttentionStatus.blocked;
+    final blocked = agent.attention.needsYou;
 
     return Scaffold(
       appBar: AppBar(
@@ -334,6 +347,7 @@ class _AgentScreenState extends State<AgentScreen> {
                             ChangesEntry e => ChangesTile(e),
                             AgentLaunchEntry(:final call) => _launchCard(c, agent, call),
                             QuestionEntry e => QuestionTile(e),
+                            PlanEntry e => PlanTile(e),
                             NoticeEntry e => NoticeTile(e),
                           },
                         );
@@ -353,6 +367,12 @@ class _AgentScreenState extends State<AgentScreen> {
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
               child: Row(children: [
+                if (agent.kind == 'claude' && c.machine.can('agents.approve'))
+                  _ModeButton(
+                    mode: agent.permissionMode,
+                    enabled: !_sending && !pending,
+                    onSelected: (m) => _setMode(c, agent, m),
+                  ),
                 Expanded(
                   child: TextField(
                     controller: _input,
@@ -425,6 +445,46 @@ class _AgentScreenState extends State<AgentScreen> {
       child = Text(t.hasMore ? '' : 'Start of the conversation', style: muted);
     }
     return Padding(padding: const EdgeInsets.all(8), child: Center(child: child));
+  }
+}
+
+/// Claude permission modes, in Shift+Tab order: (mode, label, hint, icon, color).
+const _modes = [
+  ('default', 'Manual', 'Ask before edits and commands', Icons.verified_user_outlined, HuntawayColors.muted),
+  ('acceptEdits', 'Accept edits', 'Edit files without asking', Icons.edit_outlined, Color(0xFFB9A4F0)),
+  ('plan', 'Plan', 'Explore and propose a plan, change nothing', Icons.checklist, Color(0xFF7FC8C0)),
+  ('auto', 'Auto', 'Let Claude decide what needs approval', Icons.bolt, HuntawayColors.blocked),
+];
+
+/// Permission mode of a Claude agent; switching types Shift+Tab in its terminal.
+class _ModeButton extends StatelessWidget {
+  const _ModeButton({required this.mode, required this.enabled, required this.onSelected});
+  final String? mode;
+  final bool enabled;
+  final void Function(String) onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final current = _modes.where((m) => m.$1 == mode).firstOrNull;
+    return PopupMenuButton<String>(
+      enabled: enabled,
+      tooltip: 'Permission mode${current != null ? ': ${current.$2}' : ''}',
+      onSelected: onSelected,
+      icon: Icon(current?.$4 ?? Icons.verified_user_outlined, color: enabled ? (current?.$5 ?? HuntawayColors.muted) : HuntawayColors.faint),
+      itemBuilder: (_) => [
+        for (final m in _modes)
+          PopupMenuItem(
+            value: m.$1,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(m.$4, color: m.$5),
+              title: Text(m.$2),
+              subtitle: Text(m.$3, style: const TextStyle(fontSize: 12, color: HuntawayColors.muted)),
+              trailing: m.$1 == mode ? const Icon(Icons.check, size: 18) : null,
+            ),
+          ),
+      ],
+    );
   }
 }
 
@@ -501,7 +561,7 @@ class _Breadcrumb extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(color: HuntawayColors.muted, fontSize: 12.5)),
             ),
-            if (parent.attention.status == AttentionStatus.blocked) ...[
+            if (parent.attention.needsYou) ...[
               const SizedBox(width: 6),
               StatusDot(parent.attention, size: 6),
             ],
@@ -528,13 +588,16 @@ class InteractionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final i = agent.interaction!;
-    final title = switch (i.reason) {
+    // Also when the prompt wasn't matched to the call: the plan is what the menu is about.
+    final rawPlan = i.reason == 'plan' || i.tool?.name == 'ExitPlanMode' ? (i.tool?.input['plan'] as String?)?.trim() : null;
+    final plan = rawPlan == null || rawPlan.isEmpty ? null : rawPlan;
+    final title = plan != null ? '${agent.displayName} proposes a plan' : switch (i.reason) {
       'approval' => '${agent.displayName} asks for permission',
       'question' => '${agent.displayName} has a question',
       'plan' => '${agent.displayName} proposes a plan',
       _ => '${agent.displayName} is waiting for an answer',
     };
-    final command = i.tool == null
+    final command = i.tool == null || plan != null
         ? null
         : (i.tool!.input['command'] as String?) ?? (i.tool!.input['file_path'] as String?) ?? i.tool!.summary;
     // Structured question options map to on-screen numbers 1..n.
@@ -544,7 +607,7 @@ class InteractionCard extends StatelessWidget {
     // Many options plus the keyboard would overflow: cap the card and let
     // it scroll.
     final media = MediaQuery.of(context);
-    final maxHeight = (media.size.height - media.viewInsets.bottom - media.padding.vertical) * 0.5;
+    final maxHeight = (media.size.height - media.viewInsets.bottom - media.padding.vertical) * (plan != null ? 0.7 : 0.5);
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
       constraints: BoxConstraints(maxHeight: maxHeight < 160 ? 160 : maxHeight),
@@ -556,12 +619,13 @@ class InteractionCard extends StatelessWidget {
       ),
       child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-        child: _content(i, title, command, question, options),
+        child: _content(context, i, title, command, plan, question, options),
       ),
     );
   }
 
-  Widget _content(Interaction i, String title, String? command, Question? question, List<ScreenOption> options) {
+  Widget _content(BuildContext context, Interaction i, String title, String? command, String? plan, Question? question,
+      List<ScreenOption> options) {
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Row(children: [
           StatusDot(agent.attention, size: 7),
@@ -580,7 +644,15 @@ class InteractionCard extends StatelessWidget {
               child: Text(i.tool!.name, style: mono.copyWith(fontSize: 11.5, color: HuntawayColors.muted)),
             ),
         ]),
-        if (question != null) ...[
+        if (plan != null) ...[
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(color: HuntawayColors.background, borderRadius: BorderRadius.circular(10)),
+            child: MarkdownBody(data: plan, selectable: true, styleSheet: markdownStyle(context)),
+          ),
+        ] else if (question != null) ...[
           const SizedBox(height: 8),
           Text(question.question, style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w500, height: 1.35)),
         ] else if (command != null) ...[
