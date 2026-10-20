@@ -1,3 +1,4 @@
+import { needsYou } from "../lib/conversations";
 import { ArrowDownCircle, Check, ChevronDown, ChevronRight, ChevronUp, Copy, Layers, Monitor, MoreHorizontal, Pencil, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, app, errorMessage } from "../api/client";
@@ -202,7 +203,7 @@ function MachineRow({ machine, order, first, last, latest }: { machine: MachineV
   }, [open, id, status.state]);
 
   const agents = snapshot?.agents ?? [];
-  const waiting = agents.filter((a) => a.attention.status === "blocked").length;
+  const waiting = agents.filter((a) => needsYou(a.attention)).length;
   const slow = (status.latency_ms ?? 0) > 400;
   const version = versionOf(machine, info);
   const memberOf = groups.filter((g) => g.machineIds.includes(id));

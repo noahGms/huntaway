@@ -56,18 +56,21 @@ function visible(it: Item): boolean {
     case "notice":
       return true;
     case "tool_call":
-      return it.kind === "agent";
+      return it.kind === "agent" || isProposal(it);
     default:
       return false;
   }
 }
+
+/** Plan proposed for review (`ExitPlanMode`), shown in full. */
+const isProposal = (it: Item) => it.type === "tool_call" && it.kind === "plan" && !!it.plan;
 
 /** Counts as work: moves the agent's last answer after it. */
 function isWork(it: Item): boolean {
   if (isSidechain(it)) return true;
   switch (it.type) {
     case "tool_call":
-      return it.kind !== "agent" && it.kind !== "question";
+      return it.kind !== "agent" && it.kind !== "question" && !isProposal(it);
     case "thinking":
     case "todos_updated":
       return true;
@@ -203,7 +206,8 @@ export function buildTurns(items: Item[], live: boolean): TurnRow[] {
             shown.push({ at: j, row: { kind: "notice", key, item: it } });
             break;
           case "tool_call":
-            shown.push({ at: j, row: { kind: "agent", key, call: it, result: results.get(it.tool_use_id) } });
+            if (isProposal(it)) shown.push({ at: j, row: { kind: "proposal", key, call: it, result: results.get(it.tool_use_id), continued: false } });
+            else shown.push({ at: j, row: { kind: "agent", key, call: it, result: results.get(it.tool_use_id) } });
             break;
         }
         return;

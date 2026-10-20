@@ -1,20 +1,21 @@
 import { openPath } from "@tauri-apps/plugin-opener";
-import { Archive, ArchiveRestore, ArrowDown, ChevronRight, Copy, FolderOpen, History, Monitor, MoreHorizontal, PanelRight, Play, RefreshCw, SquareArrowOutUpRight, SquareTerminal } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, ChevronDown, ChevronRight, Copy, FolderOpen, History, MessageCircleReply, Monitor, PanelRight, Play, RefreshCw, SquareArrowOutUpRight, SquareTerminal } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { api, app, errorMessage } from "../../api/client";
 import type { AgentView, MachineView, QueuedMessage } from "../../api/types";
 import { useStop } from "../../hooks/useStop";
-import { agentTitle, archiveId, historyKey, liveKey, statusLabel, type Conversation } from "../../lib/conversations";
+import { agentTitle, archiveId, askedYou, historyKey, liveKey, needsYou, statusLabel, type Conversation } from "../../lib/conversations";
 import { ALT, MOD } from "../../lib/keys";
 import { modPressed, overlayOpen } from "../../lib/platform";
 import { useDrafts } from "../../store/drafts";
 import { can, touchTimeline, useMachines } from "../../store/machines";
 import { usePrefs } from "../../store/prefs";
+import { useSeen } from "../../store/seen";
 import { useUi } from "../../store/ui";
 import { Button, IconButton, Kbd, Spinner } from "../ui/Button";
 import { Menu, MenuItem, MenuSeparator } from "../ui/Menu";
-import { AgentIcon, Badge, attentionTone } from "../ui/Status";
+import { AgentIcon, Badge } from "../ui/Status";
 import { openInTerminal } from "../panel/TerminalTab";
 import { ApprovalCard } from "./ApprovalCard";
 import { Composer } from "./Composer";
@@ -47,7 +48,21 @@ export function ConversationView({ conv }: { conv: Conversation }) {
   const working = agent?.attention.status === "working";
   const rows = useMemo(() => buildTurns(items, working), [items, working]);
   const retry = () => void loadTimeline(conv.key);
-  const showApproval = !!agent?.interaction && agent.attention.status === "blocked";
+  const showApproval = !!agent?.interaction && needsYou(agent.attention);
+  // The turn ended on a question: the answer is a message, no card.
+  const asked = !!agent && askedYou(agent.attention);
+
+  // On screen in the focused window: read up to its last activity.
+  const markSeen = useSeen((s) => s.markSeen);
+  const seenId = archiveId(conv);
+  useEffect(() => {
+    const at = conv.lastActivity;
+    if (!at) return;
+    const mark = () => document.hasFocus() && markSeen(seenId, at);
+    mark();
+    window.addEventListener("focus", mark);
+    return () => window.removeEventListener("focus", mark);
+  }, [seenId, conv.lastActivity, markSeen]);
   // Waiting ones show above the composer; sent ones until the transcript has them.
   const queued = useMemo(() => (agent?.queued ?? []).filter((q) => q.state !== "waiting"), [agent?.queued]);
   // Latest plan, pinned while it has unfinished tasks.
@@ -123,6 +138,7 @@ export function ConversationView({ conv }: { conv: Conversation }) {
             agent={agent}
             working={working}
             approval={showApproval}
+            asked={asked}
             queued={queued}
             hasMore={!!timeline?.hasMore}
             olderInHistory={!!timeline?.olderInHistory}
@@ -180,6 +196,7 @@ interface ListContext {
   machineId: string;
   agent?: AgentView;
   approval: boolean;
+  asked: boolean;
   queued: QueuedMessage[];
 }
 
@@ -206,10 +223,16 @@ function ListFooter({ context }: { context?: ListContext }) {
   const agent = context?.agent;
   return (
     <div className="pb-6">
-      <div className="mx-auto max-w-[920px]">
+      <div className="mx-auto max-w-[800px]">
         {context && <QueuedMessages queued={context.queued} working={context.working} />}
+        {context?.asked && !context.queued.length && (
+          <div className="flex items-center gap-1.5 px-6 pt-3 text-[12.5px] text-muted">
+            <MessageCircleReply size={13} />
+            Your turn: answer below
+          </div>
+        )}
         {agent && context?.approval && agent.interaction && (
-          <div className="pl-[70px] pr-6 pt-4">
+          <div className="px-6 pt-4">
             <ApprovalCard key={agent.interaction.id} machineId={context.machineId} agent={agent} />
           </div>
         )}
@@ -228,6 +251,7 @@ function TimelineList({
   agent,
   working,
   approval,
+  asked,
   queued,
   hasMore,
   olderInHistory,
@@ -242,6 +266,7 @@ function TimelineList({
   working: boolean;
   /** The agent's prompt shows at the end of the list. */
   approval: boolean;
+  asked: boolean;
   queued: QueuedMessage[];
   hasMore: boolean;
   olderInHistory: boolean;
@@ -261,8 +286,8 @@ function TimelineList({
   const prepended = Math.max(0, rows.findIndex((r) => r.key === anchor.current!.key));
   const firstItemIndex = BASE_INDEX - prepended;
   const context = useMemo(
-    () => ({ hasMore, olderInHistory, loadingOlder, working, machineId, agent, approval, queued }),
-    [hasMore, olderInHistory, loadingOlder, working, machineId, agent, approval, queued],
+    () => ({ hasMore, olderInHistory, loadingOlder, working, machineId, agent, approval, asked, queued }),
+    [hasMore, olderInHistory, loadingOlder, working, machineId, agent, approval, asked, queued],
   );
 
   // Rows are measured after they render (markdown, open work blocks), so the
@@ -283,7 +308,7 @@ function TimelineList({
     if (!atBottomRef.current && !settling.current) return;
     const frame = requestAnimationFrame(toBottom);
     return () => cancelAnimationFrame(frame);
-  }, [working, approval, queued.length]);
+  }, [working, approval, asked, queued.length]);
 
   return (
     <>
@@ -311,7 +336,7 @@ function TimelineList({
         increaseViewportBy={{ top: 600, bottom: 300 }}
         components={LIST_COMPONENTS}
         itemContent={(_, row) => (
-          <div className="mx-auto max-w-[920px]">
+          <div className="mx-auto max-w-[800px]">
             <TurnRowView row={row} kind={kind} machineId={machineId} agent={agent} />
           </div>
         )}
@@ -353,40 +378,36 @@ function Header({ conv }: { conv: Conversation }) {
   // An offline machine's agents keep their last known state: shown greyed.
   const stale = !!agent && !online;
 
+  // Working shows in the conversation itself; the header only flags what needs a look.
+  const flag = stale ? <Badge>Offline</Badge> : needsYou(conv.attention) ? <Badge tone="blocked">{statusLabel(conv.attention)}</Badge> : null;
+
   return (
-    <div className="drag flex h-[52px] shrink-0 items-center gap-3 border-b border-border px-5">
-      <div className="no-drag flex min-w-0 flex-1 items-center gap-3">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border bg-surface">
-          <AgentIcon kind={conv.kind} size={15} />
-        </span>
-        <div className="min-w-0">
-          <div className="flex min-w-0 items-center gap-1.5">
-            {parent && (
-              <>
-                <button
-                  onClick={() => select(liveKey(conv.machineId, parent.id))}
-                  className="min-w-0 max-w-[40%] shrink truncate text-[14.5px] text-muted hover:text-text"
-                  title="Open the agent that started this one"
-                >
-                  {agentTitle(parent)}
-                </button>
-                <ChevronRight size={13} className="shrink-0 text-faint" />
-              </>
-            )}
-            <h1 className="truncate text-[14.5px] font-semibold">{conv.title}</h1>
-          </div>
-          <div className="truncate text-[11.5px] text-faint">{subtitle}</div>
-        </div>
-      </div>
-      <div className="no-drag flex shrink-0 items-center gap-2">
-        {stale ? <Badge>Offline</Badge> : <Badge tone={attentionTone(conv.attention)}>{statusLabel(conv.attention)}</Badge>}
+    <div className="drag flex h-[52px] shrink-0 items-center gap-3 px-5">
+      <div className="no-drag flex min-w-0 flex-1 items-center gap-1.5">
+        {parent && (
+          <>
+            <button
+              onClick={() => select(liveKey(conv.machineId, parent.id))}
+              className="min-w-0 max-w-[30%] shrink truncate text-[14px] text-muted hover:text-text"
+              title="Open the agent that started this one"
+            >
+              {agentTitle(parent)}
+            </button>
+            <ChevronRight size={13} className="shrink-0 text-faint" />
+          </>
+        )}
         <Menu
+          align="start"
           trigger={
-            <button className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-border text-muted hover:bg-surface-high hover:text-text" aria-label="More actions">
-              <MoreHorizontal size={16} />
+            <button className="flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 hover:bg-surface-high" title={subtitle}>
+              <AgentIcon kind={conv.kind} size={14} />
+              <h1 className="truncate text-[14px] font-medium">{conv.title}</h1>
+              <ChevronDown size={14} className="shrink-0 text-faint" />
             </button>
           }
         >
+          <div className="max-w-[320px] px-2.5 pb-1.5 pt-1 text-[11.5px] text-faint">{subtitle}</div>
+          <MenuSeparator />
           {conv.cwd && (
             <MenuItem icon={<SquareTerminal size={14} />} onSelect={() => setPanelTab("terminal", "shell")}>
               Open terminal
@@ -432,6 +453,9 @@ function Header({ conv }: { conv: Conversation }) {
             {showPanel ? "Hide panel" : "Show panel"} <span className="ml-auto pl-4"><Kbd>{MOD}{ALT}B</Kbd></span>
           </MenuItem>
         </Menu>
+        {flag}
+      </div>
+      <div className="no-drag flex shrink-0 items-center gap-1">
         {!showPanel && (
           <IconButton label="Show panel" onClick={togglePanel}>
             <PanelRight size={15} />
@@ -470,9 +494,9 @@ function ResumeBar({ conv }: { conv: Conversation }) {
   };
 
   return (
-    <div className="px-6 pb-4">
+    <div className="mx-auto w-full max-w-[800px] px-6 pb-5">
       <form
-        className="flex items-center gap-2 rounded-2xl border border-border bg-surface p-2 pl-4"
+        className="flex items-center gap-2 rounded-[22px] border border-border bg-surface p-2 pl-4 shadow-[0_10px_30px_rgba(0,0,0,0.28)]"
         onSubmit={(e) => {
           e.preventDefault();
           void resume();
@@ -486,7 +510,7 @@ function ResumeBar({ conv }: { conv: Conversation }) {
           placeholder={
             !allowed ? "This device can't resume conversations" : !online ? "Machine offline" : "Archived conversation: resume it, with a message if you like…"
           }
-          className="flex-1 bg-transparent text-[13px] placeholder:text-faint focus:outline-none"
+          className="h-9 flex-1 bg-transparent text-[14px] placeholder:text-faint focus:outline-none"
         />
         <Button type="submit" variant="primary" icon={<Play size={14} />} loading={busy} disabled={!allowed || !online}>
           Resume

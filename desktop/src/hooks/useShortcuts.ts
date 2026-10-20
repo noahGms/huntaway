@@ -1,7 +1,8 @@
 // Global keyboard shortcuts (listed in Settings → Shortcuts).
 
 import { useEffect } from "react";
-import type { Conversation } from "../lib/conversations";
+import { archiveId, isUnread, needsYou, type Conversation } from "../lib/conversations";
+import { useSeen } from "../store/seen";
 import { useUi } from "../store/ui";
 
 function isTyping(target: EventTarget | null): boolean {
@@ -31,9 +32,11 @@ export function useShortcuts(conversations: Conversation[]) {
         e.preventDefault();
         ui.setPanelTab((["activity", "files", "terminal"] as const)[Number(e.key) - 1]);
       } else if (mod && e.shiftKey && e.key.toLowerCase() === "a") {
-        // Next agent waiting for the user.
+        // Next agent waiting for the user; none: the next unread one.
         e.preventDefault();
-        const waiting = conversations.filter((c) => c.attention?.status === "blocked");
+        const seen = useSeen.getState().seen;
+        const blocked = conversations.filter((c) => needsYou(c.attention));
+        const waiting = blocked.length ? blocked : conversations.filter((c) => c.key !== ui.selected && isUnread(c, seen[archiveId(c)]));
         if (!waiting.length) return;
         const i = waiting.findIndex((c) => c.key === ui.selected);
         ui.select(waiting[(i + 1) % waiting.length].key);

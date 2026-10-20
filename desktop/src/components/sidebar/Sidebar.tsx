@@ -1,26 +1,30 @@
 import { openPath } from "@tauri-apps/plugin-opener";
-import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Clock, Copy, Eye, FolderGit2, FolderOpen, History, Layers, Monitor, Plus, Puzzle, Search, Server, Settings, SlidersHorizontal, Square, SquareArrowOutUpRight, SquareTerminal, Star, ArrowUpRight, Boxes } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Clock, Copy, Eye, Folder, FolderOpen, History, Layers, Monitor, Plus, Puzzle, Search, Server, Settings, SlidersHorizontal, Square, SquareArrowOutUpRight, SquarePen, SquareTerminal, Star, ArrowUpRight, Boxes } from "lucide-react";
 import { memo, useEffect, useMemo, useRef } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { errorMessage } from "../../api/client";
 import { openInTerminal } from "../panel/TerminalTab";
 import type { MachineView } from "../../api/types";
 import { useConversations } from "../../hooks/useConversations";
+import { useUnread } from "../../hooks/useUnread";
 import { useStop } from "../../hooks/useStop";
 import { isMac } from "../../lib/platform";
-import { archiveId, buildSidebarRows, compactAge, historyKey, longDate, projectKey, statusLabel, treeCollapsedId, treeExpandedId, type Conversation, type ConvTree, type SidebarRow } from "../../lib/conversations";
+import { archiveId, askedYou, buildSidebarRows, needsYou, compactAge, historyKey, longDate, projectKey, statusLabel, treeCollapsedId, treeExpandedId, type Conversation, type ConvTree, type SidebarRow } from "../../lib/conversations";
 import { MOD } from "../../lib/keys";
 import { orderMachines, spaceLabel, spaceMachineIds, type Space } from "../../lib/spaces";
 import { machineList, useMachines } from "../../store/machines";
 import { usePrefs } from "../../store/prefs";
 import { useSettings } from "../../store/settings";
 import { useUi, type View } from "../../store/ui";
-import { IconButton, Kbd } from "../ui/Button";
+import { IconButton } from "../ui/Button";
 import { LimitsGauge, MachinesLimitsGauge } from "../ui/Limits";
 import { Logo } from "../ui/Logo";
 import { ContextMenu, Menu, MenuItem, MenuSeparator } from "../ui/Menu";
 import { MachineDot, StatusDot, agentLabel } from "../ui/Status";
 import { UpdateBanner } from "./UpdateBanner";
+
+/** Conversations per project before "Show more". */
+const PROJECT_LIMIT = 5;
 
 export function Sidebar() {
   const conversations = useConversations();
@@ -51,11 +55,13 @@ export function Sidebar() {
     const set = new Set(idsKey.split(","));
     const archived = new Set(prefs.archived);
     // An archived agent that needs an answer still shows.
-    const hidden = (c: (typeof conversations)[number]) => !prefs.showArchived && archived.has(archiveId(c)) && c.attention?.status !== "blocked";
+    const hidden = (c: (typeof conversations)[number]) => !prefs.showArchived && archived.has(archiveId(c)) && !needsYou(c.attention);
     return conversations.filter((c) => set.has(c.machineId) && (prefs.showPast || c.live) && !hidden(c));
   }, [conversations, idsKey, prefs.showPast, prefs.showArchived, prefs.archived]);
   const collapsed = useMemo(() => new Set(prefs.collapsed), [prefs.collapsed]);
   const favorites = useMemo(() => new Set(prefs.favorites), [prefs.favorites]);
+  const unreadKeys = useUnread(conversations);
+  const unread = useMemo(() => new Set(unreadKeys), [unreadKeys]);
   const rows = useMemo(
     () =>
       buildSidebarRows(filtered, {
@@ -66,11 +72,15 @@ export function Sidebar() {
         projectOrder: prefs.projectOrder,
         inactiveDays: prefs.inactiveDays,
         showInactive: prefs.showInactive,
+        projectLimit: PROJECT_LIMIT,
+        selected,
+        unread,
       }),
-    [filtered, grouping, spaceMachines, collapsed, favorites, prefs.projectOrder, prefs.inactiveDays, prefs.showInactive],
+    [filtered, grouping, spaceMachines, collapsed, favorites, prefs.projectOrder, prefs.inactiveDays, prefs.showInactive, selected, unread],
   );
   // Every machine, so that a hidden space needing attention still shows.
-  const waiting = useMemo(() => conversations.filter((c) => c.attention?.status === "blocked").length, [conversations]);
+  const waitingKeys = useMemo(() => conversations.filter((c) => needsYou(c.attention)).map((c) => c.key), [conversations]);
+  const waiting = waitingKeys.length;
 
   // Alt+↑/↓ walks what the sidebar shows (pinned waiting rows first, once).
   const visibleKeys = useMemo(() => [...new Set(rows.flatMap((r) => (r.type === "conv" ? [r.conv.key] : [])))], [rows]);
@@ -113,28 +123,15 @@ export function Sidebar() {
         </div>
       </div>
 
-      <div className="flex shrink-0 gap-1.5 px-2 pb-2">
-        <button
-          onClick={() => setPalette(true)}
-          className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg border border-border bg-bg px-2.5 text-[12.5px] text-faint hover:border-[#363c46]"
-        >
-          <Search size={13} />
-          <span className="flex-1 truncate text-left">Search…</span>
-          <Kbd>{MOD}</Kbd>
-          <Kbd>K</Kbd>
-        </button>
-        <button
-          onClick={() => openNewSession()}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent text-on-accent hover:bg-[#fff3e2]"
-          aria-label="New session"
-          title={`New session (${MOD}${isMac ? "" : "+"}N)`}
-        >
-          <Plus size={16} />
-        </button>
+      <div className="shrink-0 px-1.5 pb-2">
+        <NavRow icon={<SquarePen size={15} />} label="New session" shortcut={`${MOD}${isMac ? "" : "+"}N`} onClick={() => openNewSession()} />
+        <NavRow icon={<Search size={15} />} label="Search" shortcut={`${MOD}${isMac ? "" : "+"}K`} onClick={() => setPalette(true)} />
       </div>
 
-      <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 pb-1.5">
-        <SpaceMenu machines={machines} waiting={waiting} />
+      <div className="flex shrink-0 items-center gap-1 px-2 pb-1">
+        <SpaceMenu machines={machines} />
+        {waiting > 0 && <JumpPill keys={waitingKeys} selected={selected} tone="waiting" />}
+        {unreadKeys.length > 0 && <JumpPill keys={unreadKeys} selected={selected} tone="unread" />}
         <DisplayMenu />
         {!rows.some((r) => r.type === "machine") && (
           <span className="ml-auto pr-1">
@@ -153,7 +150,7 @@ export function Sidebar() {
             ref={list}
             data={rows}
             computeItemKey={(_, row) => row.id}
-            itemContent={(_, row) => <Row row={row} active={active} machines={machinesById} />}
+            itemContent={(_, row) => <Row row={row} active={active} machines={machinesById} unread={unread} />}
           />
         )}
       </div>
@@ -163,11 +160,11 @@ export function Sidebar() {
   );
 }
 
-function Row({ row, active, machines }: { row: SidebarRow; active: string | null; machines: Record<string, MachineView> }) {
+function Row({ row, active, machines, unread }: { row: SidebarRow; active: string | null; machines: Record<string, MachineView>; unread: ReadonlySet<string> }) {
   switch (row.type) {
     case "header":
       return (
-        <div className={`flex h-6 items-end px-3.5 pb-0.5 text-[11px] font-medium ${row.waiting ? "text-blocked" : "text-faint"}`}>
+        <div className={`flex h-8 items-end px-4 pb-1 text-[12px] font-medium ${row.waiting ? "text-blocked" : "text-faint"}`}>
           {row.label}
         </div>
       );
@@ -176,7 +173,20 @@ function Row({ row, active, machines }: { row: SidebarRow; active: string | null
     case "project":
       return <ProjectRow row={row} />;
     case "conv":
-      return <ConversationRow conv={row.conv} active={active === row.conv.key} depth={row.depth} suffix={row.suffix} tree={row.tree} />;
+      return <ConversationRow conv={row.conv} active={active === row.conv.key} unread={unread.has(row.conv.key)} depth={row.depth} suffix={row.suffix} tree={row.tree} />;
+    case "more":
+      return (
+        <div className="px-1.5">
+          <button
+            onClick={() => usePrefs.getState().toggleCollapsed(row.id)}
+            className="flex h-8 w-full items-center rounded-lg text-left text-[13px] text-faint hover:bg-surface-high/50 hover:text-muted"
+            style={indent(row.depth + 0.6)}
+          >
+            <span className="w-5 shrink-0" />
+            {row.showing ? "Show less" : "Show more"}
+          </button>
+        </div>
+      );
     case "inactive":
       return (
         <button
@@ -190,13 +200,25 @@ function Row({ row, active, machines }: { row: SidebarRow; active: string | null
   }
 }
 
-const indent = (depth: number) => ({ paddingLeft: 6 + depth * 12 });
+const indent = (depth: number) => ({ paddingLeft: 8 + depth * 12 });
 
-function Count({ count, waiting }: { count: number; waiting: number }) {
+function NavRow({ icon, label, shortcut, onClick }: { icon: React.ReactNode; label: string; shortcut: string; onClick: () => void }) {
+  return (
+    <button onClick={onClick} className="group flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13.5px] text-text hover:bg-surface-high/60">
+      <span className="text-muted">{icon}</span>
+      <span className="flex-1 truncate">{label}</span>
+      <span className="text-[11px] text-faint opacity-0 group-hover:opacity-100">{shortcut}</span>
+    </button>
+  );
+}
+
+/** Waiting conversations; the total only on hover. */
+function Count({ count, waiting, unread = 0 }: { count: number; waiting: number; unread?: number }) {
   return (
     <span className="flex shrink-0 items-center gap-1.5">
+      {unread > 0 && <span className="h-1.5 w-1.5 rounded-full bg-done" title={`${unread} unread`} />}
       {waiting > 0 && <span className="rounded bg-blocked px-1 text-[10.5px] font-semibold leading-4 text-ink">{waiting}</span>}
-      <span className="w-6 text-right text-[11px] tabular-nums text-faint">{count}</span>
+      <span className="hidden w-5 text-right text-[11px] tabular-nums text-faint group-hover:inline">{count}</span>
     </span>
   );
 }
@@ -207,7 +229,7 @@ const MachineRow = memo(function MachineRow({ row, machine }: { row: Extract<Sid
   const state = machine?.status.state ?? "offline";
   return (
     <div className="group px-1.5">
-      <div className="flex h-7 items-center gap-1.5 rounded-md pr-1.5 hover:bg-surface-high/50" style={indent(0)}>
+      <div className="mt-2 flex h-8 items-center gap-1.5 rounded-lg pr-1.5 hover:bg-surface-high/50" style={indent(0)}>
         <button onClick={() => toggle(row.id)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" aria-expanded={!row.collapsed}>
           {row.collapsed ? <ChevronRight size={13} className="shrink-0 text-faint" /> : <ChevronDown size={13} className="shrink-0 text-faint" />}
           {machine?.record.local ? <Monitor size={13} className="shrink-0 text-muted" /> : <Server size={13} className="shrink-0 text-muted" />}
@@ -237,11 +259,10 @@ const ProjectRow = memo(function ProjectRow({ row }: { row: Extract<SidebarRow, 
   return (
     <ContextMenu content={<ProjectMenu row={row} projectId={key} />}>
       <div className="group px-1.5">
-        <div className="flex h-7 items-center gap-1.5 rounded-md pr-1.5 hover:bg-surface-high/50" style={indent(row.depth)}>
-          <button onClick={() => toggle(row.id)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" aria-expanded={!row.collapsed}>
-            {row.collapsed ? <ChevronRight size={13} className="shrink-0 text-faint" /> : <ChevronDown size={13} className="shrink-0 text-faint" />}
-            <FolderGit2 size={13} className="shrink-0 text-faint" />
-            <span className="min-w-0 truncate text-[12.5px] text-muted">{row.project}</span>
+        <div className="mt-1.5 flex h-8 items-center gap-1.5 rounded-lg pr-1.5 hover:bg-surface-high/50" style={indent(row.depth)}>
+          <button onClick={() => toggle(row.id)} className="flex min-w-0 flex-1 items-center gap-2.5 text-left" aria-expanded={!row.collapsed}>
+            {row.collapsed ? <Folder size={15} className="shrink-0 text-faint" /> : <FolderOpen size={15} className="shrink-0 text-faint" />}
+            <span className="min-w-0 truncate text-[13.5px] text-muted">{row.project}</span>
           </button>
           <span className={`shrink-0 items-center gap-1 ${row.favorite ? "flex" : "hidden group-hover:flex"}`}>
             <button
@@ -261,7 +282,7 @@ const ProjectRow = memo(function ProjectRow({ row }: { row: Extract<SidebarRow, 
           >
             <ArrowUpRight size={13} />
           </button>
-          <Count count={row.count} waiting={row.waiting} />
+          <Count count={row.count} waiting={row.waiting} unread={row.collapsed ? row.unread : 0} />
         </div>
       </div>
     </ContextMenu>
@@ -300,12 +321,14 @@ function ProjectMenu({ row, projectId }: { row: Extract<SidebarRow, { type: "pro
 const ConversationRow = memo(function ConversationRow({
   conv,
   active,
+  unread,
   depth,
   suffix,
   tree,
 }: {
   conv: Conversation;
   active: boolean;
+  unread: boolean;
   depth: number;
   suffix?: string;
   tree?: ConvTree;
@@ -315,7 +338,8 @@ const ConversationRow = memo(function ConversationRow({
   // Folded: the most urgent state of the agents it started shows on it.
   const own = tree && !tree.expanded ? tree.rollup : conv.attention;
   const attention = offline && conv.live ? null : own;
-  const blocked = attention?.status === "blocked";
+  const blocked = needsYou(attention);
+  const asked = askedYou(attention);
   const archived = usePrefs((s) => s.archived.includes(archiveId(conv)));
   const toggleTree = () => {
     if (!tree) return;
@@ -330,7 +354,9 @@ const ConversationRow = memo(function ConversationRow({
     <ContextMenu content={<ConversationMenu conv={conv} archived={archived} />}>
       <div className={`px-1.5 ${archived ? "opacity-60" : ""}`}>
         <div
-          className={`flex h-7 w-full items-center rounded-md pr-2 transition-colors [[data-state=open]>&]:bg-surface-high/50 ${active ? "bg-surface-high" : "hover:bg-surface-high/50"}`}
+          className={`group flex h-8 w-full items-center rounded-lg pr-2 transition-colors [[data-state=open]>&]:bg-surface-high/50 ${
+            blocked ? (active ? "bg-blocked/25" : "bg-blocked/12 hover:bg-blocked/20") : active ? "bg-surface-high" : "hover:bg-surface-high/50"
+          }`}
           style={indent(depth + (depth ? 0.6 : 0))}
         >
           {tree ? (
@@ -348,18 +374,35 @@ const ConversationRow = memo(function ConversationRow({
           )}
           <button
             onClick={() => useUi.getState().select(conv.key)}
-            className="flex h-7 min-w-0 flex-1 items-center gap-2 text-left"
+            className="flex h-8 min-w-0 flex-1 items-center gap-2.5 text-left"
             title={`${conv.title}\n${conv.project} · ${conv.machineName}\n${agentLabel(conv.kind)} · ${offline && conv.live ? "Machine offline" : statusLabel(conv.attention)}${conv.lastActivity ? ` · ${longDate(conv.lastActivity)}` : ""}`}
           >
-            <span className="flex w-3 shrink-0 justify-center">
-              <StatusDot attention={attention} size={7} />
+            {/* Only what needs a look gets a mark: waiting, working, unread. */}
+            <span className="flex w-[15px] shrink-0 justify-center">
+              {unread ? (
+                <span className="h-[7px] w-[7px] rounded-full bg-done" aria-label="Unread" />
+              ) : (
+                attention && (attention.status === "working" || blocked) && <StatusDot attention={attention} size={7} />
+              )}
             </span>
-            <span className={`min-w-0 flex-1 truncate text-[13px] leading-5 ${conv.live ? (active ? "text-text" : "text-[#d9d5ce]") : "text-muted"}`}>{conv.title}</span>
+            <span
+              className={`min-w-0 flex-1 truncate text-[13.5px] leading-5 ${
+                blocked ? "text-[#f3d2ab]" : unread ? "font-medium text-[#d9d5ce]" : conv.live ? (active ? "text-text" : "text-[#d9d5ce]") : "text-muted"
+              }`}
+            >
+              {conv.title}
+            </span>
             {suffix && <span className="min-w-0 max-w-[40%] shrink truncate text-[11px] text-faint">{suffix}</span>}
             {tree && !tree.expanded && (
               <span className={`shrink-0 rounded px-1 text-[10.5px] leading-4 tabular-nums ${blocked ? "bg-blocked font-semibold text-ink" : "bg-surface-high text-muted"}`}>{tree.total}</span>
             )}
-            <span className={`w-8 shrink-0 text-right text-[11px] tabular-nums ${blocked ? "text-blocked" : "text-faint"}`}>{compactAge(conv.lastActivity)}</span>
+            {blocked ? (
+              <span className="shrink-0 text-[11px] font-medium text-blocked">Waiting</span>
+            ) : unread && asked ? (
+              <span className="shrink-0 text-[11px] text-done">Asked you</span>
+            ) : (
+              <span className={`w-8 shrink-0 text-right text-[11px] tabular-nums text-faint ${active ? "" : "hidden group-hover:inline"}`}>{compactAge(conv.lastActivity)}</span>
+            )}
           </button>
         </div>
       </div>
@@ -441,7 +484,28 @@ function ConversationMenu({ conv, archived }: { conv: Conversation; archived: bo
   );
 }
 
-function SpaceMenu({ machines, waiting }: { machines: MachineView[]; waiting: number }) {
+/**
+ * Agents waiting on a prompt (orange), or unread finished turns (cream), on
+ * every machine: each click opens the next one.
+ */
+function JumpPill({ keys, selected, tone }: { keys: string[]; selected: string | null; tone: "waiting" | "unread" }) {
+  const next = keys[(keys.indexOf(selected ?? "") + 1) % keys.length];
+  const waiting = tone === "waiting";
+  return (
+    <button
+      onClick={() => useUi.getState().select(next)}
+      className={`flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2 text-[11.5px] font-medium ${
+        waiting ? "bg-blocked/15 text-blocked hover:bg-blocked/25" : "bg-done/12 text-done hover:bg-done/20"
+      }`}
+      title={waiting ? "Open the next agent waiting for you" : "Open the next finished conversation you haven't seen"}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${waiting ? "bg-blocked animate-pulse-dot" : "bg-done"}`} />
+      {keys.length} {waiting ? "waiting" : "unread"}
+    </button>
+  );
+}
+
+function SpaceMenu({ machines }: { machines: MachineView[] }) {
   const { space, groups, setSpace } = usePrefs();
   const { setView, openPair } = useUi();
   const is = (s: Space) => JSON.stringify(s) === JSON.stringify(space);
@@ -454,7 +518,6 @@ function SpaceMenu({ machines, waiting }: { machines: MachineView[]; waiting: nu
           {space.kind === "machine" ? <Server size={13} className="shrink-0 text-muted" /> : space.kind === "group" ? <Layers size={13} className="shrink-0 text-muted" /> : <Boxes size={13} className="shrink-0 text-muted" />}
           <span className="min-w-0 truncate font-medium">{spaceLabel(space, machines, groups)}</span>
           <ChevronDown size={12} className="shrink-0 text-faint" />
-          {waiting > 0 && <span className="ml-auto rounded bg-blocked px-1 text-[10.5px] font-semibold leading-4 text-ink" title={`${waiting} waiting`}>{waiting}</span>}
         </button>
       }
     >

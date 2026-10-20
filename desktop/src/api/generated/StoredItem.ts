@@ -16,7 +16,11 @@ n: number, } & ({ "type": "user_message", uuid: string, timestamp: string, text:
 /**
  * Short human summary: file path, command, pattern…
  */
-summary: string, sidechain: boolean, change?: FileChange, agent?: AgentLaunch, } | { "type": "thinking", timestamp: string, text: string, sidechain: boolean, } | { "type": "tool_result", timestamp: string, tool_use_id: string, is_error: boolean, 
+summary: string, sidechain: boolean, change?: FileChange, agent?: AgentLaunch, 
+/**
+ * Markdown of a proposed plan (Claude `ExitPlanMode`).
+ */
+plan?: string, } | { "type": "thinking", timestamp: string, text: string, sidechain: boolean, } | { "type": "tool_result", timestamp: string, tool_use_id: string, is_error: boolean, 
 /**
  * The user declined the permission prompt for this call.
  */

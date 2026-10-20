@@ -15,6 +15,7 @@ export type Row =
   | { kind: "tool"; key: string; call: ToolCallItem; result?: ToolResultItem; continued: boolean }
   | { kind: "plan"; key: string; item: Extract<StoredItem, { type: "todos_updated" }>; latest: boolean; continued: boolean }
   | { kind: "question"; key: string; item: Extract<StoredItem, { type: "question_asked" }>; result?: ToolResultItem; continued: boolean }
+  | { kind: "proposal"; key: string; call: ToolCallItem; result?: ToolResultItem; continued: boolean }
   | { kind: "subagent"; key: string; items: StoredItem[]; continued: boolean }
   | { kind: "thinking"; key: string; item: Extract<StoredItem, { type: "thinking" }>; continued: boolean }
   | { kind: "turn"; key: string; item: Extract<StoredItem, { type: "turn_ended" }> }
@@ -65,6 +66,8 @@ export function buildRows(items: StoredItem[]): Row[] {
           push({ kind: "command", key, call: it, result, continued: agentTurn });
         } else if (it.kind === "file_modified") {
           push({ kind: "file", key, call: it, result, continued: agentTurn });
+        } else if (it.kind === "plan" && it.plan) {
+          push({ kind: "proposal", key, call: it, result, continued: agentTurn });
         } else {
           push({ kind: "tool", key, call: it, result, continued: agentTurn });
         }

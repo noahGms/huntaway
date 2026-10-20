@@ -69,6 +69,8 @@ export const api = {
   removeQueued: (m: string, id: string, queued: string) => api.post<{ ok: boolean; text: string }>(m, `/v1/agents/${seg(id)}/queue/${seg(queued)}/remove`),
   sendQueuedNow: (m: string, id: string, queued: string) => api.post(m, `/v1/agents/${seg(id)}/queue/${seg(queued)}/send`),
   interrupt: (m: string, id: string) => api.post(m, `/v1/agents/${seg(id)}/interrupt`),
+  /** Claude permission mode (`default`, `acceptEdits`, `plan`, `auto`…); returns the mode reached. */
+  setMode: (m: string, id: string, mode: string) => api.post<{ ok: boolean; mode: string }>(m, `/v1/agents/${seg(id)}/mode`, { mode }),
   /** Answers the prompt `interactionId`; the daemon refuses with 409 `interaction_changed` if the agent moved on. */
   choose: (m: string, id: string, interactionId: string, number: number, text?: string) =>
     api.post(m, `/v1/agents/${seg(id)}/choice`, { number, text: text || undefined, interaction_id: interactionId }),

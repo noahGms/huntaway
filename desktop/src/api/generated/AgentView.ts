@@ -37,4 +37,9 @@ children: Array<string>,
  * Messages sent from Huntaway that the transcript does not show yet
  * (the agent was busy, or has not written them yet), oldest first.
  */
-queued: Array<QueuedMessage>, };
+queued: Array<QueuedMessage>, 
+/**
+ * Claude permission mode: `default`, `acceptEdits`, `plan`, `auto`,
+ * `bypassPermissions` or `dontAsk`, when known.
+ */
+permission_mode: string | null, };

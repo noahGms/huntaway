@@ -62,9 +62,9 @@ export function CodeBlock({ code, lang, maxHeight = 420 }: { code: string; lang?
   );
 }
 
-export const Markdown = memo(function Markdown({ text }: { text: string }) {
+export const Markdown = memo(function Markdown({ text, small = false }: { text: string; small?: boolean }) {
   return (
-    <div className="md selectable text-[13.5px] text-[#e3dfd8]">
+    <div className={`md selectable ${small ? "text-[13.5px]" : "text-[14.5px]"} text-[#e3dfd8]`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

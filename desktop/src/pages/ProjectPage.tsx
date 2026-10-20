@@ -7,7 +7,7 @@ import { ProjectTerminalPanel, ProjectTools } from "../components/project/Projec
 import { Button } from "../components/ui/Button";
 import { AgentIcon, StatusDot } from "../components/ui/Status";
 import { useConversations } from "../hooks/useConversations";
-import { compactAge, compareConversations, fromHistory, longDate, projectKey, statusLabel, type Conversation } from "../lib/conversations";
+import { compactAge, compareConversations, fromHistory, longDate, needsYou, projectKey, statusLabel, type Conversation } from "../lib/conversations";
 import { useMachines } from "../store/machines";
 import { usePrefs } from "../store/prefs";
 import { useUi } from "../store/ui";
@@ -64,7 +64,7 @@ export function ProjectPage() {
   const agent = list.find((c) => c.agent)?.agent;
   const cwd = list.find((c) => c.cwd)?.cwd;
   const live = list.filter((c) => c.live).length;
-  const waiting = list.filter((c) => c.attention?.status === "blocked").length;
+  const waiting = list.filter((c) => needsYou(c.attention)).length;
 
   return (
     <div className="flex h-full flex-col">
@@ -107,7 +107,7 @@ export function ProjectPage() {
                 </span>
                 <AgentIcon kind={c.kind} size={13} />
                 <span className={`min-w-0 flex-1 truncate text-[13px] ${c.live ? "" : "text-muted"}`}>{c.title}</span>
-                <span className={`shrink-0 text-[11.5px] ${c.attention?.status === "blocked" ? "text-blocked" : "text-faint"}`}>{statusLabel(c.attention)}</span>
+                <span className={`shrink-0 text-[11.5px] ${needsYou(c.attention) ? "text-blocked" : "text-faint"}`}>{statusLabel(c.attention)}</span>
                 <span className="w-10 shrink-0 text-right text-[11.5px] tabular-nums text-faint" title={longDate(c.lastActivity)}>
                   {compactAge(c.lastActivity)}
                 </span>

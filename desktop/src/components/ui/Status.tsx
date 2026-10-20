@@ -1,11 +1,14 @@
 import { Sparkles, Hexagon, TerminalSquare } from "lucide-react";
 import type { Attention } from "../../api/types";
+import { askedYou } from "../../lib/conversations";
 
 /** Colored dot for an agent state; animated while working. */
 export function StatusDot({ attention, size = 8 }: { attention: Attention | null; size?: number }) {
   const color = !attention
     ? "bg-faint/60"
-    : attention.status === "blocked"
+    : askedYou(attention)
+      ? "bg-done"
+      : attention.status === "blocked"
       ? "bg-blocked"
       : attention.status === "working"
         ? "bg-working animate-pulse-dot"
@@ -40,6 +43,7 @@ export function Badge({ children, tone = "neutral" }: { children: React.ReactNod
 
 export function attentionTone(attention: Attention | null): "neutral" | "blocked" | "working" | "done" {
   if (!attention) return "neutral";
+  if (askedYou(attention)) return "neutral";
   if (attention.status === "blocked") return "blocked";
   if (attention.status === "working") return "working";
   if (attention.status === "done") return "done";

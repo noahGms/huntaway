@@ -1,4 +1,4 @@
-import { Hand, ListChecks, MessageCircleQuestion, ShieldAlert, SquareTerminal } from "lucide-react";
+import { Hand, ListChecks, Maximize2, MessageCircleQuestion, Minimize2, ShieldAlert, SquareTerminal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage, isApiError } from "../../api/client";
 import type { AgentView, ScreenOption } from "../../api/types";
@@ -6,7 +6,8 @@ import { changeDiff } from "../../lib/diff";
 import { overlayOpen } from "../../lib/platform";
 import { can, useMachines } from "../../store/machines";
 import { useUi } from "../../store/ui";
-import { Button, Kbd } from "../ui/Button";
+import { Button, Kbd, Spinner } from "../ui/Button";
+import { agentLabel } from "../ui/Status";
 import { DiffView } from "./DiffView";
 import { CodeBlock, Markdown } from "./Markdown";
 
@@ -38,6 +39,19 @@ function toolPreview(input: unknown) {
   return <CodeBlock code={json.slice(0, 4000)} lang="json" maxHeight={180} />;
 }
 
+/** Before "Couldn't read the menu". */
+const MENU_WAIT_MS = 5_000;
+
+/** `Run npm test?`, `Edit session.ts?`, `Allow WebFetch?`. */
+function approvalTitle(name: string | undefined, input: unknown): string {
+  const i = (input ?? {}) as Record<string, unknown>;
+  const path = typeof i.file_path === "string" ? i.file_path.split("/").pop() : null;
+  if (typeof i.command === "string" || Array.isArray(i.cmd) || typeof i.cmd === "string") return "Run this command?";
+  if (path && (name === "Write" || typeof i.content === "string")) return `Create ${path}?`;
+  if (path) return `Edit ${path}?`;
+  return name ? `Allow ${name}?` : "Approval needed";
+}
+
 /**
  * Card for the prompt the agent shows; mount it with `key={interaction.id}`.
  * `embedded`: inside another card (an agent started by this one), without
@@ -52,6 +66,7 @@ export function ApprovalCard({ machineId, agent, embedded = false }: { machineId
   const [denyText, setDenyText] = useState("");
   const [showDeny, setShowDeny] = useState(false);
   const [freeText, setFreeText] = useState("");
+  const [expanded, setExpanded] = useState(false);
   const allowed = can(machine, "agents.approve");
   const options = interaction.options;
   const typeOption = options.find((o) => TYPE_SOMETHING.test(o.label));
@@ -104,45 +119,70 @@ export function ApprovalCard({ machineId, agent, embedded = false }: { machineId
     return () => window.removeEventListener("keydown", onKey);
   });
 
+  // Also when the prompt wasn't matched to the call (reason `prompt`): the
+  // plan is what the menu is about.
+  const plan =
+    interaction.reason === "plan" || interaction.tool?.name === "ExitPlanMode"
+      ? ((interaction.tool?.input as { plan?: string } | null)?.plan?.trim() || null)
+      : null;
+
+  // Says what is asked, not just that something is.
   const header = useMemo(() => {
+    if (plan) return { icon: <ListChecks size={16} />, title: "Plan to review" };
+    const tool = interaction.tool;
     switch (interaction.reason) {
       case "approval":
-        return { icon: <ShieldAlert size={16} />, title: "Approval needed" };
+        return { icon: <ShieldAlert size={16} />, title: approvalTitle(tool?.name, tool?.input) };
       case "question":
-        return { icon: <MessageCircleQuestion size={16} />, title: "The agent has a question" };
+        return { icon: <MessageCircleQuestion size={16} />, title: interaction.questions.length > 1 ? `${interaction.questions.length} questions for you` : "Question for you" };
       case "plan":
         return { icon: <ListChecks size={16} />, title: "Plan to review" };
       default:
-        return { icon: <Hand size={16} />, title: "The agent is waiting for an answer" };
+        return { icon: <Hand size={16} />, title: `${agentLabel(agent.kind)} shows a menu` };
     }
-  }, [interaction.reason]);
+  }, [interaction.reason, interaction.tool, interaction.questions.length, plan, agent.kind]);
 
-  const plan = interaction.reason === "plan" ? ((interaction.tool?.input as { plan?: string } | null)?.plan ?? null) : null;
+  // The menu is read from the screen: give it a moment before saying it couldn't be.
+  const [unreadable, setUnreadable] = useState(false);
+  useEffect(() => {
+    if (options.length) return;
+    const timer = setTimeout(() => setUnreadable(true), MENU_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [options.length]);
 
   return (
     <div
       className={
         embedded
-          ? "overflow-hidden bg-[#1d1a16]"
-          : "overflow-hidden rounded-2xl border border-blocked/45 bg-[#1d1a16] shadow-[0_0_0_4px_rgba(227,155,75,0.06)] animate-fade-in"
+          ? "overflow-hidden bg-surface"
+          : "overflow-hidden rounded-[18px] border border-blocked/35 bg-surface shadow-[0_10px_30px_rgba(0,0,0,0.28)] animate-fade-in"
       }
     >
-      <div className="flex items-center gap-2 border-b border-blocked/20 px-4 py-2.5 text-blocked">
+      <div className="flex items-center gap-2 px-4 pb-1 pt-3 text-blocked">
         {header.icon}
-        <span className="text-[13px] font-semibold">{header.title}</span>
+        <span className="text-[13.5px] font-medium">{header.title}</span>
         {interaction.tool && interaction.reason === "approval" && (
-          <span className="ml-1 truncate font-mono text-[12px] text-[#d9b48a]">
+          <span className="ml-1 truncate font-mono text-[12px] text-muted">
             {interaction.tool.name}
             {interaction.tool.summary && ` · ${interaction.tool.summary}`}
           </span>
         )}
+        {plan && (
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="ml-auto flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[12px] text-muted hover:bg-surface-high hover:text-text"
+          >
+            {expanded ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+            {expanded ? "Less" : "Full plan"}
+          </button>
+        )}
       </div>
-      <div className="max-h-[38vh] space-y-3 overflow-y-auto px-4 py-3">
+      <div className={`${expanded ? "max-h-[72vh]" : plan ? "max-h-[50vh]" : "max-h-[38vh]"} space-y-3 overflow-y-auto px-4 py-2.5`}>
         {interaction.reason === "approval" && interaction.tool && toolPreview(interaction.tool.input)}
         {interaction.questions.map((q, i) => (
           <div key={i}>
             {q.header && <div className="mb-0.5 text-[11px] uppercase tracking-wider text-faint">{q.header}</div>}
-            <div className="selectable text-[13.5px]">{q.question}</div>
+            <div className="selectable text-[14px]">{q.question}</div>
             {options.length === 0 && (
               <ul className="mt-1.5 space-y-1 text-[12.5px] text-muted">
                 {q.options.map((o) => (
@@ -156,41 +196,52 @@ export function ApprovalCard({ machineId, agent, embedded = false }: { machineId
           </div>
         ))}
         {plan && (
-          <div className="rounded-xl border border-border bg-surface px-3.5 py-3">
+          <div className="rounded-xl border border-border bg-bg px-4 py-3">
             <Markdown text={plan} />
           </div>
         )}
-        {interaction.reason === "prompt" && options.length === 0 && (
-          <p className="text-[12.5px] text-muted">Couldn't read the menu. Answer from the terminal.</p>
+        {options.length === 0 && (interaction.reason === "prompt" || unreadable) && (
+          <p className="text-[13px] text-muted">Couldn't read the menu. Answer from the terminal.</p>
         )}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-blocked/20 px-4 py-3">
-        {!allowed && <span className="text-[12px] text-muted">This device isn't allowed to answer.</span>}
+      {/* The agent's choices, one per line as in its menu: 1–9 pick, Esc denies. */}
+      <div className="space-y-0.5 px-2 pb-1 pt-1">
+        {!allowed && <p className="px-2 py-1.5 text-[12.5px] text-muted">This device isn't allowed to answer.</p>}
         {allowed &&
           options
             .filter((o) => o !== typeOption)
             .map((o, i) => (
-              <Button
+              <button
                 key={o.number}
-                size="sm"
-                variant={i === 0 ? "primary" : "secondary"}
-                loading={busy === o.number}
                 disabled={busy !== null}
                 onClick={() => void choose(o)}
-                title={o.detail ?? undefined}
+                className={`group flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-colors disabled:opacity-50 ${i === 0 ? "bg-accent text-on-accent hover:bg-[#fff3e2]" : "hover:bg-surface-high"}`}
               >
-                {!embedded && <Kbd>{o.number}</Kbd>}
-                <span className="max-w-[320px] truncate">{o.label}</span>
-              </Button>
+                <span
+                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md font-mono text-[11px] ${i === 0 ? "bg-on-accent/10" : "border border-border text-faint group-hover:text-muted"}`}
+                >
+                  {busy === o.number ? <Spinner className="h-3 w-3" /> : o.number}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13.5px]">{o.label}</span>
+                  {o.detail && <span className={`block truncate text-[12px] ${i === 0 ? "opacity-70" : "text-faint"}`}>{o.detail}</span>}
+                </span>
+              </button>
             ))}
-        {allowed && options.length === 0 && interaction.reason !== "prompt" && <span className="text-[12px] text-muted">Reading the menu…</span>}
-        <div className="flex-1" />
+        {allowed && options.length === 0 && interaction.reason !== "prompt" && !unreadable && (
+          <p className="flex items-center gap-2 px-2 py-1.5 text-[12.5px] text-muted">
+            <Spinner className="h-3 w-3" /> Reading the menu…
+          </p>
+        )}
+      </div>
+      <div className="flex items-center gap-2 px-4 pb-3 pt-1">
         <Button size="sm" variant="ghost" icon={<SquareTerminal size={13} />} onClick={() => setPanelTab("terminal", "agent")}>
           Terminal
         </Button>
+        <div className="flex-1" />
         {allowed && interaction.reason === "approval" && !showDeny && (
-          <Button size="sm" variant="danger" disabled={busy !== null} onClick={() => setShowDeny(true)}>
+          <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => setShowDeny(true)}>
             Deny… {!embedded && <Kbd>Esc</Kbd>}
           </Button>
         )}
@@ -198,7 +249,7 @@ export function ApprovalCard({ machineId, agent, embedded = false }: { machineId
 
       {allowed && typeOption && (
         <form
-          className="flex gap-2 border-t border-blocked/20 px-4 py-3"
+          className="flex gap-2 border-t border-border px-4 py-3"
           onSubmit={(e) => {
             e.preventDefault();
             if (freeText.trim()) void choose(typeOption, freeText.trim());
@@ -218,7 +269,7 @@ export function ApprovalCard({ machineId, agent, embedded = false }: { machineId
 
       {showDeny && (
         <form
-          className="flex gap-2 border-t border-blocked/20 px-4 py-3"
+          className="flex gap-2 border-t border-border px-4 py-3"
           onSubmit={(e) => {
             e.preventDefault();
             void deny();

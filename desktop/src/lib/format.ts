@@ -82,6 +82,12 @@ export function basename(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
+/** The path without its last component (`""` for a bare name). */
+export function dirname(path: string): string {
+  const i = path.replace(/\/+$/, "").lastIndexOf("/");
+  return i > 0 ? path.slice(0, i) : "";
+}
+
 /** Keeps the last `keep` components of a path. */
 export function shortPath(path: string, keep = 3): string {
   const parts = path.split("/").filter(Boolean);

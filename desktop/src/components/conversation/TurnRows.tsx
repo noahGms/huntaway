@@ -1,8 +1,8 @@
-import { Bot, ChevronRight, Clock, FileCode2, FilePen, History, ListChecks, Loader2, Workflow, X } from "lucide-react";
+import { Bot, ChevronRight, Clock, FileCode2, FilePen, History, ListChecks, Loader2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { AgentView, QueuedMessage, Todo } from "../../api/types";
-import { agentTitle, liveKey, statusLabel } from "../../lib/conversations";
-import { duration, firstLine, parseTime, shortPath } from "../../lib/format";
+import { agentTitle, liveKey, needsYou, statusLabel } from "../../lib/conversations";
+import { basename, dirname, duration, firstLine, parseTime, shortPath } from "../../lib/format";
 import { useMachines } from "../../store/machines";
 import { useUi } from "../../store/ui";
 import { AgentIcon, StatusDot } from "../ui/Status";
@@ -40,9 +40,9 @@ function useElapsed(iso: string | null, on: boolean): number | null {
   return on && t !== null ? Math.max(0, now - t) : null;
 }
 
-/** Indented like an agent block's content (avatar column + gap). */
-function Indented({ children, top = "pt-1.5" }: { children: React.ReactNode; top?: string }) {
-  return <div className={`pl-[70px] pr-6 ${top}`}>{children}</div>;
+/** Aligned with the agent's text. */
+function Indented({ children, top = "pt-3" }: { children: React.ReactNode; top?: string }) {
+  return <div className={`px-6 ${top}`}>{children}</div>;
 }
 
 function WorkBlock({ row, kind }: { row: Extract<TurnRow, { kind: "work" }>; kind: string }) {
@@ -56,45 +56,46 @@ function WorkBlock({ row, kind }: { row: Extract<TurnRow, { kind: "work" }>; kin
   const elapsed = useElapsed(row.startedAt, row.live);
   const stats = statsLabel(row.stats);
   const time = row.live ? duration(elapsed) : row.durationMs ? duration(row.durationMs) : null;
-  const label = row.live ? `Working${time ? ` · ${time}` : ""}` : time ? `Worked ${time}` : "Worked";
+  const label = row.live ? "Working" : time ? `Worked for ${time}` : "Worked";
   const hidden = row.live && !showAll ? Math.max(0, row.rows.length - LIVE_TAIL) : 0;
   const rows = hidden ? row.rows.slice(hidden) : row.rows;
 
   return (
     <Indented>
-      <div className={`overflow-hidden rounded-xl border ${row.live ? "border-working/30" : "border-border"} bg-surface`}>
-        <button
-          onClick={() => {
-            touched.current = true;
-            setOpen(!open);
-          }}
-          className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12.5px]"
-          aria-expanded={open}
-        >
-          <ChevronRight size={13} className={`shrink-0 text-faint transition-transform ${open ? "rotate-90" : ""}`} />
-          {row.live ? <Loader2 size={13} className="shrink-0 animate-spin text-working" /> : <Workflow size={13} className="shrink-0 text-faint" />}
-          <span className={`shrink-0 ${row.live ? "text-text" : "text-muted"}`}>{label}</span>
-          {row.live && row.current ? (
-            <span className="selectable min-w-0 truncate font-mono text-[11.5px] text-faint">{row.current}</span>
-          ) : (
-            stats && <span className="min-w-0 truncate text-faint">· {stats}</span>
+      <button
+        onClick={() => {
+          touched.current = true;
+          setOpen(!open);
+        }}
+        className="group/work flex max-w-full items-center gap-2 py-1 text-left text-[13px]"
+        aria-expanded={open}
+      >
+        <span className={`shrink-0 ${row.live ? "shimmer font-medium" : "text-muted group-hover/work:text-text"}`}>{label}</span>
+        {row.live && time && <span className="shrink-0 tabular-nums text-faint">{time}</span>}
+        {!row.live && stats && <span className="min-w-0 truncate text-faint">· {stats}</span>}
+        <ChevronRight size={13} className={`shrink-0 text-faint transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+      {open && rows.length > 0 && (
+        <div className="mb-1 ml-[5px] mt-1 border-l border-border pl-4">
+          {hidden > 0 && (
+            <button onClick={() => setShowAll(true)} className="mb-1 text-[12px] text-faint hover:text-text">
+              Show {hidden} earlier step{hidden > 1 ? "s" : ""}
+            </button>
           )}
-        </button>
-        {open && rows.length > 0 && (
-          <div className="border-t border-border px-3 pb-2.5 pt-1">
-            {hidden > 0 && (
-              <button onClick={() => setShowAll(true)} className="mb-1 mt-1 text-[11.5px] text-faint hover:text-text">
-                Show {hidden} earlier step{hidden > 1 ? "s" : ""}
-              </button>
-            )}
-            <CompactRows.Provider value={true}>
-              {rows.map((r) => (
-                <RowView key={r.key} row={r} kind={kind} />
-              ))}
-            </CompactRows.Provider>
-          </div>
-        )}
-      </div>
+          <CompactRows.Provider value={true}>
+            {rows.map((r) => (
+              <RowView key={r.key} row={r} kind={kind} />
+            ))}
+          </CompactRows.Provider>
+        </div>
+      )}
+      {/* Folded: what it is doing now; open, the last step says it. */}
+      {row.live && !open && row.current && (
+        <div className="ml-[5px] flex items-center gap-2 border-l border-transparent pl-4 pt-0.5 text-[12.5px]">
+          <Loader2 size={12} className="shrink-0 animate-spin text-working" />
+          <span className="selectable min-w-0 truncate font-mono text-[12px] text-faint">{row.current}</span>
+        </div>
+      )}
     </Indented>
   );
 }
@@ -120,7 +121,7 @@ function AgentLaunchCard({ call, result, machineId, parent }: { call: ToolCallIt
   const launch = call.agent;
   const name = child ? agentTitle(child) : (launch?.name ?? "Agent");
   const kind = child?.kind ?? launch?.kind ?? "agent";
-  const blocked = child?.attention.status === "blocked";
+  const blocked = needsYou(child?.attention);
   return (
     <Indented top="pt-2">
       <div className={`overflow-hidden rounded-xl border ${blocked ? "border-blocked/45" : "border-border"} bg-surface`}>
@@ -160,47 +161,64 @@ function AgentLaunchCard({ call, result, machineId, parent }: { call: ToolCallIt
   );
 }
 
+/** Files listed before "Show all". */
+const FILES_SHOWN = 3;
+
 function FilesChanged({ files }: { files: FileSummary[] }) {
   const focusFile = useUi((s) => s.focusFile);
   const setPanelTab = useUi((s) => s.setPanelTab);
-  const [open, setOpen] = useState(files.length <= 4);
+  const [all, setAll] = useState(files.length <= FILES_SHOWN + 1);
   const additions = files.reduce((n, f) => n + f.additions, 0);
   const deletions = files.reduce((n, f) => n + f.deletions, 0);
+  const shown = all ? files : files.slice(0, FILES_SHOWN);
   return (
-    <Indented top="pt-2">
+    <Indented top="pt-4">
       <div className="overflow-hidden rounded-xl border border-border">
-        <div className="flex items-center gap-2 bg-surface px-3 py-2 text-[12.5px]">
-          <button onClick={() => setOpen(!open)} className="flex min-w-0 items-center gap-2 text-muted hover:text-text" aria-expanded={open}>
-            <ChevronRight size={13} className={`shrink-0 text-faint transition-transform ${open ? "rotate-90" : ""}`} />
-            {files.length} file{files.length > 1 ? "s" : ""} changed
-          </button>
-          <span className="rounded-md bg-done/12 px-1.5 font-mono text-[11px] text-done">
-            +{additions}
-            {deletions > 0 && <span className="text-error"> −{deletions}</span>}
+        <div className="flex items-center gap-2 border-b border-border px-3.5 py-2.5 text-[13px]">
+          <span className="min-w-0 flex-1 truncate">
+            Changed {files.length} file{files.length > 1 ? "s" : ""}
           </span>
-          <span className="flex-1" />
-          <button onClick={() => setPanelTab("files")} className="shrink-0 text-[11.5px] text-faint hover:text-text">
-            Review changes →
+          <button onClick={() => setPanelTab("files")} className="shrink-0 text-[12.5px] text-muted hover:text-text">
+            Review
           </button>
         </div>
-        {open &&
-          files.map((f) => (
-            <button
-              key={f.path}
-              onClick={() => focusFile(f.path)}
-              className="flex w-full items-center gap-2 border-t border-border px-3 py-1.5 text-left text-[12px] hover:bg-surface-high/50"
-              title={f.path}
-            >
-              {f.created ? <FileCode2 size={13} className="shrink-0 text-faint" /> : <FilePen size={13} className="shrink-0 text-faint" />}
-              <span className="min-w-0 flex-1 truncate font-mono">{shortPath(f.path, 4)}</span>
-              <span className="shrink-0 font-mono text-[11px] text-done">
-                +{f.additions}
-                {f.deletions > 0 && <span className="text-error"> −{f.deletions}</span>}
-              </span>
-            </button>
-          ))}
+        {shown.map((f) => (
+          <button
+            key={f.path}
+            onClick={() => focusFile(f.path)}
+            className="flex w-full items-center gap-2.5 px-3.5 py-[7px] text-left text-[13px] hover:bg-surface"
+            title={f.path}
+          >
+            {f.created ? <FileCode2 size={14} className="shrink-0 text-faint" /> : <FilePen size={14} className="shrink-0 text-faint" />}
+            <span className="min-w-0 truncate">{basename(f.path)}</span>
+            <span className="min-w-0 flex-1 truncate text-[12px] text-faint">{shortPath(dirname(f.path), 3)}</span>
+            <Delta additions={f.additions} deletions={f.deletions} />
+          </button>
+        ))}
+        {!all ? (
+          <button onClick={() => setAll(true)} className="flex w-full items-center gap-2 px-3.5 py-[7px] text-left text-[13px] text-muted hover:bg-surface hover:text-text">
+            <span className="flex-1">Show all</span>
+            <Delta additions={additions} deletions={deletions} />
+          </button>
+        ) : (
+          files.length > 1 && (
+            <div className="flex items-center gap-2 px-3.5 py-[7px] text-[12px] text-faint">
+              <span className="flex-1">Total</span>
+              <Delta additions={additions} deletions={deletions} />
+            </div>
+          )
+        )}
       </div>
     </Indented>
+  );
+}
+
+function Delta({ additions, deletions }: { additions: number; deletions: number }) {
+  return (
+    <span className="shrink-0 font-mono text-[12px] tabular-nums">
+      <span className="text-done">+{additions}</span>
+      {deletions > 0 && <span className="text-error"> −{deletions}</span>}
+    </span>
   );
 }
 
@@ -209,16 +227,11 @@ export function QueuedMessages({ queued, working }: { queued: QueuedMessage[]; w
   return (
     <>
       {queued.map((q, i) => (
-        <div key={`${q.at}-${i}`} className="flex gap-3.5 px-6 pt-5 opacity-70">
-          <div className="w-8 shrink-0">
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-user text-[11px] font-semibold text-accent">You</div>
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="selectable whitespace-pre-wrap break-words text-[13.5px] leading-[1.6] text-[#e8e4dd]">{q.text}</div>
-            <div className="mt-1 flex items-center gap-1.5 text-[11.5px] text-faint">
-              <Clock size={11} />
-              {working ? "Sent: read after its current step" : "Sending…"}
-            </div>
+        <div key={`${q.at}-${i}`} className="flex flex-col items-end px-6 pt-8 opacity-70">
+          <div className="selectable max-w-[85%] whitespace-pre-wrap break-words rounded-[18px] bg-surface-high px-4 py-2.5 text-[14.5px] leading-[1.6] text-[#ece8e1]">{q.text}</div>
+          <div className="mt-1 flex items-center gap-1.5 text-[11.5px] text-faint">
+            <Clock size={11} />
+            {working ? "Sent: read after its current step" : "Sending…"}
           </div>
         </div>
       ))}
@@ -257,7 +270,7 @@ export function PlanBar({ todos }: { todos: Todo[] }) {
   const done = todos.filter((t) => t.status === "completed").length;
   const current = todos.find((t) => t.status === "in_progress") ?? todos.find((t) => t.status !== "completed");
   return (
-    <div className="px-6 pb-2">
+    <div className="mx-auto w-full max-w-[800px] px-6 pb-2">
       <button
         onClick={() => setOpen(!open)}
         className="flex w-full items-center gap-2 rounded-xl border border-border bg-surface px-3 py-1.5 text-left text-[12.5px] hover:border-[#3a414c]"

@@ -1,6 +1,6 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { ArrowUp, AtSign, CornerDownLeft, FileText, Image as ImageIcon, ListOrdered, Paperclip, Pencil, Slash, Square, Trash2, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { ArrowUp, AtSign, Check, ChevronDown, CornerDownLeft, FileText, Image as ImageIcon, ListChecks, ListOrdered, Paperclip, Pencil, Plus, ShieldCheck, Slash, Square, Trash2, X, Zap } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { api, app, errorMessage } from "../../api/client";
 import type { AgentView, FileMatch, QueuedMessage } from "../../api/types";
 import { markSent, useStop } from "../../hooks/useStop";
@@ -11,12 +11,15 @@ import { can, useMachines } from "../../store/machines";
 import { useSettings } from "../../store/settings";
 import { useUi } from "../../store/ui";
 import { Spinner } from "../ui/Button";
-import { AgentIcon } from "../ui/Status";
+import { Menu, MenuItem } from "../ui/Menu";
+import { askedYou } from "../../lib/conversations";
+import { AgentIcon, agentLabel } from "../ui/Status";
 
 const QUICK_REPLIES = ["Continue", "Run the tests", "Explain what you just did", "Commit the changes"];
 
 const SLASH: Record<string, [string, string][]> = {
   claude: [
+    ["/plan", "Plan before changing anything"],
     ["/compact", "Summarize the context"],
     ["/clear", "New conversation"],
     ["/cost", "Session cost"],
@@ -33,6 +36,68 @@ const SLASH: Record<string, [string, string][]> = {
     ["/status", "Session status"],
   ],
 };
+
+/** Claude permission modes, in Shift+Tab order. */
+const MODES: { mode: string; label: string; hint: string; icon: ReactNode; tone: string }[] = [
+  { mode: "default", label: "Manual", hint: "Ask before edits and commands", icon: <ShieldCheck size={14} />, tone: "text-muted" },
+  { mode: "acceptEdits", label: "Accept edits", hint: "Edit files without asking", icon: <Pencil size={14} />, tone: "text-[#b9a4f0]" },
+  { mode: "plan", label: "Plan", hint: "Explore and propose a plan, change nothing", icon: <ListChecks size={14} />, tone: "text-[#7fc8c0]" },
+  { mode: "auto", label: "Auto", hint: "Let Claude decide what needs approval", icon: <Zap size={14} />, tone: "text-blocked" },
+];
+const OTHER_MODES: Record<string, string> = { bypassPermissions: "Bypass", dontAsk: "Don't ask" };
+
+/** Permission mode of a Claude agent; switching types Shift+Tab in its terminal. */
+function ModePicker({ machineId, agent, disabled }: { machineId: string; agent: AgentView; disabled: boolean }) {
+  const toast = useUi((s) => s.toast);
+  const [busy, setBusy] = useState<string | null>(null);
+  const current = agent.permission_mode ?? null;
+  const known = MODES.find((m) => m.mode === current);
+  const label = known?.label ?? (current ? (OTHER_MODES[current] ?? current) : "Manual");
+  const pick = async (mode: string) => {
+    if (mode === current) return;
+    setBusy(mode);
+    try {
+      await api.setMode(machineId, agent.id, mode);
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <Menu
+      trigger={
+        <button
+          disabled={disabled || busy !== null}
+          className={`flex h-8 items-center gap-1.5 rounded-full px-2.5 text-[12.5px] hover:bg-surface-high disabled:opacity-40 ${known?.tone ?? "text-muted"}`}
+          title="Permission mode (Shift+Tab in Claude Code)"
+          aria-label="Permission mode"
+        >
+          {busy ? <Spinner /> : (known?.icon ?? <ShieldCheck size={14} />)}
+          {label}
+          <ChevronDown size={12} className="text-faint" />
+        </button>
+      }
+    >
+      {MODES.map((m) => (
+        <MenuItem key={m.mode} icon={<span className={m.tone}>{m.icon}</span>} onSelect={() => void pick(m.mode)}>
+          <span className="flex min-w-0 flex-col">
+            <span>{m.label}</span>
+            <span className="text-[11px] text-faint">{m.hint}</span>
+          </span>
+          {m.mode === current && <Check size={13} className="ml-auto text-muted" />}
+        </MenuItem>
+      ))}
+    </Menu>
+  );
+}
+
+/** `claude-opus-5-5` → `Opus 5.5`; other names as they are. */
+function modelLabel(model: string): string {
+  const m = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(model);
+  if (!m) return model.replace(/^claude-/, "");
+  return `${m[1].charAt(0).toUpperCase()}${m[1].slice(1)} ${m[2]}.${m[3]}`;
+}
 
 function readAsBase64(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -239,7 +304,7 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
   };
 
   return (
-    <div className="px-6 pb-4">
+    <div className="mx-auto w-full max-w-[800px] px-6 pb-5">
       {!text && !attachments.length && !disabledReason && idle && (
         <div className="mb-2 flex flex-wrap gap-1.5">
           {QUICK_REPLIES.map((q) => (
@@ -250,7 +315,7 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
                 ref.current?.focus();
               }}
               title="Put in the message box"
-              className="rounded-full border border-border bg-surface px-2.5 py-[3px] text-[11.5px] text-muted transition-colors hover:border-[#3a414c] hover:text-text"
+              className="rounded-full border border-border px-3 py-1 text-[12px] text-muted transition-colors hover:bg-surface hover:text-text"
             >
               {q}
             </button>
@@ -274,7 +339,9 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
           }}
         />
       )}
-      <div className={`relative rounded-2xl border bg-surface transition-colors ${disabledReason ? "border-border opacity-70" : "border-border focus-within:border-[#3a414c]"}`}>
+      <div
+        className={`relative rounded-[22px] border bg-surface shadow-[0_10px_30px_rgba(0,0,0,0.28)] transition-colors ${disabledReason ? "border-border opacity-70" : "border-border focus-within:border-[#3a414c]"}`}
+      >
         {popup.length > 0 && (
           <div className="absolute bottom-full left-0 right-0 mb-2 max-h-[280px] overflow-y-auto rounded-xl border border-border bg-surface p-1 shadow-[0_-12px_30px_rgba(0,0,0,0.4)]">
             {popup.map((p, i) => (
@@ -312,7 +379,16 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
           rows={1}
           value={text}
           disabled={!!disabledReason}
-          placeholder={disabledReason ?? (blocked ? "Deny and say what to do instead… (or answer above)" : queues ? "Queue a message for when the agent finishes…" : "Message…  (@ file, / command)")}
+          placeholder={
+            disabledReason ??
+            (blocked
+              ? "Deny and say what to do instead… (or answer above)"
+              : queues
+                ? "Queue a message for when the agent finishes…"
+                : askedYou(agent.attention)
+                  ? `Reply to ${agentLabel(agent.kind)}…`
+                  : "Type / for commands, @ to mention a file")
+          }
           onChange={(e) => {
             setText(e.target.value);
             updateMention(e.target.value, e.target.selectionStart);
@@ -327,33 +403,49 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
               void upload(name, async () => app.uploadData(machineId, name, await readAsBase64(f)));
             }
           }}
-          className="block max-h-[240px] w-full resize-none bg-transparent px-4 pb-1 pt-3 text-[13.5px] leading-[1.55] text-text placeholder:text-faint focus:outline-none disabled:cursor-not-allowed"
+          className="block max-h-[240px] min-h-[52px] w-full resize-none bg-transparent px-4 pb-1 pt-3.5 text-[14.5px] leading-[1.55] text-text placeholder:text-faint focus:outline-none focus-visible:outline-none disabled:cursor-not-allowed"
         />
         <div className="flex items-center gap-1 px-2 pb-2">
-          <button
-            onClick={() => fileInput.current?.click()}
-            disabled={!!disabledReason}
-            className="rounded-lg p-1.5 text-faint hover:bg-surface-high hover:text-text disabled:opacity-40"
-            aria-label="Attach a file"
-            title="Attach a file (or drop it, or paste an image)"
+          <Menu
+            align="start"
+            trigger={
+              <button
+                disabled={!!disabledReason}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-muted hover:bg-surface-high hover:text-text disabled:opacity-40"
+                aria-label="Add"
+                title="Add files or mentions"
+              >
+                <Plus size={17} />
+              </button>
+            }
           >
-            <Paperclip size={15} />
-          </button>
-          <button
-            onClick={() => {
-              const caret = ref.current?.selectionStart ?? text.length;
-              const next = `${text.slice(0, caret)}${caret > 0 && !/\s$/.test(text.slice(0, caret)) ? " " : ""}@`;
-              setText(next + text.slice(caret));
-              updateMention(next, next.length);
-              ref.current?.focus();
-            }}
-            disabled={!!disabledReason || !canReadFiles}
-            className="rounded-lg p-1.5 text-faint hover:bg-surface-high hover:text-text disabled:opacity-40"
-            aria-label="Mention a file"
-            title="Mention a file"
-          >
-            <AtSign size={15} />
-          </button>
+            <MenuItem icon={<Paperclip size={14} />} onSelect={() => fileInput.current?.click()}>
+              Attach a file <span className="ml-auto pl-4 text-[11px] text-faint">or drop, paste</span>
+            </MenuItem>
+            <MenuItem
+              icon={<AtSign size={14} />}
+              disabled={!canReadFiles}
+              onSelect={() => {
+                const caret = ref.current?.selectionStart ?? text.length;
+                const next = `${text.slice(0, caret)}${caret > 0 && !/\s$/.test(text.slice(0, caret)) ? " " : ""}@`;
+                setText(next + text.slice(caret));
+                updateMention(next, next.length);
+                setTimeout(() => ref.current?.focus());
+              }}
+            >
+              Mention a file
+            </MenuItem>
+            <MenuItem
+              icon={<Slash size={14} />}
+              onSelect={() => {
+                setText("/");
+                setTimeout(() => ref.current?.focus());
+              }}
+            >
+              Commands
+            </MenuItem>
+          </Menu>
+          {agent.kind === "claude" && <ModePicker machineId={machineId} agent={agent} disabled={!online || blocked || !canDeny} />}
           <input
             ref={fileInput}
             type="file"
@@ -366,16 +458,16 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
           />
           <div className="flex-1" />
           {agent.model && (
-            <span className="mr-1 flex items-center gap-1.5 rounded-lg border border-border px-2 py-1 text-[11.5px] text-muted" title="Model used by the agent">
-              <AgentIcon kind={agent.kind} size={11} />
-              {agent.model.replace(/^claude-/, "")}
+            <span className="mr-1 flex items-center gap-1.5 px-1.5 text-[12.5px] text-muted" title="Model used by the agent">
+              <AgentIcon kind={agent.kind} size={12} />
+              {modelLabel(agent.model)}
             </span>
           )}
           {canStop && !text.trim() && !attachments.length ? (
             <button
               onClick={() => void stop()}
               disabled={stopping}
-              className="flex h-8 w-8 items-center justify-center rounded-[10px] bg-accent text-on-accent transition-opacity hover:bg-[#fff3e2] disabled:opacity-30"
+              className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-on-accent transition-opacity hover:bg-[#fff3e2] disabled:opacity-30"
               aria-label="Stop"
               title={`Stop the agent (${MOD}.)`}
             >
@@ -385,7 +477,7 @@ export function Composer({ machineId, agent }: { machineId: string; agent: Agent
             <button
               onClick={() => void send()}
               disabled={!!disabledReason || sending || (!text.trim() && !attachments.length)}
-              className="flex h-8 w-8 items-center justify-center rounded-[10px] bg-accent text-on-accent transition-opacity hover:bg-[#fff3e2] disabled:opacity-30"
+              className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-on-accent transition-opacity hover:bg-[#fff3e2] disabled:opacity-30"
               aria-label={blocked ? "Deny with this message" : queues ? "Queue" : "Send"}
               title={`${blocked ? "Deny with this message" : queues ? "Queue: sent when the agent finishes" : "Send"} (${enterToSend ? "Enter" : `${MOD} Enter`})`}
             >

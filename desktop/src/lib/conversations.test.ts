@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSidebarRows, compactAge, groupConversations, inactiveProjects, liveKey, nestConversations, projectsOf, searchConversations, treeCollapsedId, treeExpandedId, type Conversation, type SidebarOptions } from "./conversations";
+import { buildSidebarRows, compactAge, isUnread, needsYou, groupConversations, inactiveProjects, liveKey, nestConversations, projectsOf, searchConversations, treeCollapsedId, treeExpandedId, type Conversation, type SidebarOptions } from "./conversations";
 import { moveMachine, orderMachines, spaceMachineIds } from "./spaces";
 
 const conv = (key: string, last: string, status: "blocked" | "done" | null, project = "api", machineId = "m", machineName = "Mac"): Conversation => ({
@@ -46,13 +46,18 @@ describe("buildSidebarRows", () => {
   ];
   const machines = [{ id: "m", name: "Mac" }, { id: "vps", name: "vps" }];
 
-  it("builds a machine → project tree with counts and pinned waiting agents", () => {
+  it("builds a machine → project tree with counts", () => {
     const rows = buildSidebarRows(list, opts({ machines }));
     // Projects by name, not by activity.
-    expect(rows.map((r) => r.id)).toEqual(["h-waiting", "w-b", "m:m", "p:m|api", "a", "m:vps", "p:vps|api", "c", "p:vps|web", "b"]);
+    expect(rows.map((r) => r.id)).toEqual(["m:m", "p:m|api", "a", "m:vps", "p:vps|api", "c", "p:vps|web", "b"]);
     const vps = rows.find((r) => r.id === "m:vps");
     expect(vps).toMatchObject({ count: 2, waiting: 1 });
-    expect(rows[1]).toMatchObject({ suffix: "web · vps" });
+  });
+  it("keeps waiting agents in sight inside folded projects and machines", () => {
+    expect(buildSidebarRows(list, opts({ machines, collapsed: new Set(["p:vps|web"]) })).map((r) => r.id)).toEqual(["m:m", "p:m|api", "a", "m:vps", "p:vps|api", "c", "p:vps|web", "b"]);
+    const rows = buildSidebarRows(list, opts({ machines, collapsed: new Set(["m:vps"]) }));
+    expect(rows.map((r) => r.id)).toEqual(["m:m", "p:m|api", "a", "m:vps", "b"]);
+    expect(rows[4]).toMatchObject({ depth: 1, suffix: "web" });
   });
   it("keeps the user's project order and does not move rows on status changes", () => {
     const rows = buildSidebarRows(list, opts({ machines, projectOrder: ["vps|web", "vps|api"] }));
@@ -73,7 +78,7 @@ describe("buildSidebarRows", () => {
   });
   it("hides collapsed nodes and sorts favorites first", () => {
     const rows = buildSidebarRows(list, opts({ machines, collapsed: new Set(["m:m", "p:vps|web"]), favorites: new Set(["vps|api"]) }));
-    expect(rows.map((r) => r.id)).toEqual(["h-waiting", "w-b", "m:m", "m:vps", "p:vps|api", "c", "p:vps|web"]);
+    expect(rows.map((r) => r.id)).toEqual(["m:m", "m:vps", "p:vps|api", "c", "p:vps|web", "b"]);
   });
   it("groups by date with a project suffix", () => {
     const rows = buildSidebarRows(list, opts({ machines, grouping: "date" }));
@@ -86,6 +91,37 @@ describe("buildSidebarRows", () => {
     expect(rows.map((r) => r.id)).toEqual(["p:m|api", "y", "inactive"]);
     expect(buildSidebarRows(old, opts({ inactiveDays: 14, showInactive: true })).map((r) => r.id)).toContain("x");
     expect(inactiveProjects(old, new Set(["m|legacy"]), 14, now).size).toBe(0);
+  });
+});
+
+describe("needs you / unread", () => {
+  const asked = (key: string, last: string, project = "api"): Conversation => ({
+    ...conv(key, last, "done", project),
+    attention: { status: "blocked", reason: "explicit_question" },
+  });
+  it("only counts prompts on screen as waiting", () => {
+    expect(needsYou({ status: "blocked", reason: "approval" })).toBe(true);
+    expect(needsYou({ status: "blocked", reason: "explicit_question" })).toBe(false);
+    expect(needsYou({ status: "done" })).toBe(false);
+  });
+  it("keeps a turn ending on a question inside its folded project", () => {
+    const rows = buildSidebarRows([asked("q", "2026-10-17T11:00:00"), conv("b", "2026-10-17T10:00:00", "blocked", "web")], opts({ collapsed: new Set(["p:m|api", "p:m|web"]) }));
+    expect(rows.map((r) => r.id)).toEqual(["p:m|api", "p:m|web", "b"]);
+    const unread = buildSidebarRows([asked("q", "2026-10-17T11:00:00")], opts({ collapsed: new Set(["p:m|api"]), unread: new Set(["q"]) }));
+    expect(unread[0]).toMatchObject({ type: "project", unread: 1 });
+  });
+  it("is unread when the last turn ended after it was seen", () => {
+    const q = asked("q", "2026-10-17T11:00:00");
+    expect(isUnread(q, undefined)).toBe(true);
+    expect(isUnread(q, "2026-10-17T11:00:00")).toBe(false);
+    expect(isUnread(q, "2026-10-17T10:00:00")).toBe(true);
+    // Never seen and idle: an old conversation, not news.
+    expect(isUnread({ ...q, attention: { status: "idle" } }, undefined)).toBe(false);
+    expect(isUnread({ ...q, attention: { status: "idle" } }, "2026-10-17T10:00:00")).toBe(true);
+    // Waiting or working: not "unread", shown as such.
+    expect(isUnread(conv("b", "2026-10-17T11:00:00", "blocked"), undefined)).toBe(false);
+    expect(isUnread({ ...q, attention: { status: "working" } }, undefined)).toBe(false);
+    expect(isUnread({ ...q, live: false }, undefined)).toBe(false);
   });
 });
 

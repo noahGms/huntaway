@@ -22,6 +22,31 @@ export interface Conversation {
   history?: HistoryEntry;
 }
 
+/**
+ * Waiting on a prompt on screen (approval, menu, plan): nothing moves until
+ * the user answers. A turn that ended on a plain-text question is not one: it
+ * is the user's turn, shown as unread.
+ */
+export function needsYou(attention: Attention | null | undefined): boolean {
+  return attention?.status === "blocked" && attention.reason !== "explicit_question";
+}
+
+/** The last turn ended on a question in the agent's text. */
+export const askedYou = (attention: Attention | null | undefined) => attention?.status === "blocked" && attention.reason === "explicit_question";
+
+/**
+ * A live conversation whose last turn ended after it was last on screen.
+ * Never seen: unread only while it just finished (done or asking), so a
+ * first launch doesn't light up every old conversation.
+ */
+export function isUnread(c: Conversation, seenAt: string | undefined): boolean {
+  if (!c.live || !c.attention || needsYou(c.attention) || c.attention.status === "working") return false;
+  const last = parseTime(c.lastActivity);
+  if (last === null) return false;
+  if (seenAt === undefined) return c.attention.status === "done" || askedYou(c.attention);
+  return last > (parseTime(seenAt) ?? 0);
+}
+
 export const liveKey = (machineId: string, agentId: string) => `live|${machineId}|${agentId}`;
 export const historyKey = (machineId: string, historyId: string) => `hist|${machineId}|${historyId}`;
 
@@ -96,7 +121,7 @@ export function compareConversations(a: Conversation, b: Conversation): number {
     if (!c.attention) return 6;
     switch (c.attention.status) {
       case "blocked":
-        return 0;
+        return needsYou(c.attention) ? 0 : 2;
       case "working":
         return 1;
       default:
@@ -127,8 +152,8 @@ const DAY = 86_400_000;
 
 /** Flat sidebar groups. Waiting agents always get their own group on top. */
 export function groupConversations(list: Conversation[], by: "date" | "project", now = Date.now()): Group[] {
-  const waiting = list.filter((c) => c.attention?.status === "blocked");
-  const rest = list.filter((c) => c.attention?.status !== "blocked");
+  const waiting = list.filter((c) => needsYou(c.attention));
+  const rest = list.filter((c) => !needsYou(c.attention));
   const groups: Group[] = [];
   if (waiting.length) groups.push({ id: "waiting", label: "Waiting", items: waiting });
   if (by === "project") {
@@ -213,7 +238,7 @@ function latest(items: Conversation[]): number {
   return t;
 }
 
-const isWaiting = (c: Conversation) => c.attention?.status === "blocked";
+const isWaiting = (c: Conversation) => needsYou(c.attention);
 
 export type SidebarRow =
   | { type: "header"; id: string; label: string; waiting?: boolean }
@@ -225,6 +250,8 @@ export type SidebarRow =
       project: string;
       count: number;
       waiting: number;
+      /** Unread conversations (in `SidebarOptions.unread`). */
+      unread: number;
       collapsed: boolean;
       favorite: boolean;
       depth: number;
@@ -235,7 +262,9 @@ export type SidebarRow =
       local: boolean;
     }
   | { type: "conv"; id: string; conv: Conversation; depth: number; suffix?: string; tree?: ConvTree }
-  | { type: "inactive"; id: string; hidden: number; showing: boolean };
+  | { type: "inactive"; id: string; hidden: number; showing: boolean }
+  /** "Show more" under a project folded to its first conversations; `id` toggles in `collapsed`. */
+  | { type: "more"; id: string; hidden: number; showing: boolean; depth: number };
 
 export interface SidebarOptions {
   grouping: "date" | "project";
@@ -248,6 +277,12 @@ export interface SidebarOptions {
   /** Projects idle for this many days are hidden (0 = never). */
   inactiveDays: number;
   showInactive: boolean;
+  /** Conversations listed per project before "Show more" (none: all). */
+  projectLimit?: number;
+  /** Shown even past the limit. */
+  selected?: string | null;
+  /** Keys of the unread conversations: shown past the limit, counted on folded projects. */
+  unread?: ReadonlySet<string>;
   now?: number;
 }
 
@@ -261,7 +296,7 @@ export interface ConvTree {
   rollup: Attention | null;
 }
 
-const urgency = (a: Attention | null | undefined) => (!a ? 9 : a.status === "blocked" ? 0 : a.status === "working" ? 1 : 5);
+const urgency = (a: Attention | null | undefined) => (!a ? 9 : needsYou(a) ? 0 : a.status === "working" ? 1 : 5);
 
 /** The most urgent of two states (blocked, then working). */
 export function moreUrgent(a: Attention | null, b: Attention | null): Attention | null {
@@ -317,7 +352,7 @@ function treeOf(c: Conversation, childrenOf: Map<string, Conversation[]>, collap
     childAttention = moreUrgent(childAttention, r);
   }
   // Open by default while a child needs attention.
-  const expanded = collapsed.has(treeExpandedId(c.key)) || (!collapsed.has(treeCollapsedId(c.key)) && childAttention?.status === "blocked");
+  const expanded = collapsed.has(treeExpandedId(c.key)) || (!collapsed.has(treeCollapsedId(c.key)) && needsYou(childAttention));
   return { children, total, expanded, rollup };
 }
 
@@ -351,7 +386,7 @@ export function buildSidebarRows(all: Conversation[], opts: SidebarOptions): Sid
     const t = treeOf(c, childrenOf, opts.collapsed);
     if (t) trees.set(c.key, t);
   }
-  const isWaiting = (c: Conversation) => (trees.get(c.key)?.rollup ?? c.attention)?.status === "blocked";
+  const isWaiting = (c: Conversation) => needsYou(trees.get(c.key)?.rollup ?? c.attention);
   const inactive = inactiveProjects(list, opts.favorites, opts.inactiveDays, now);
   const visible = opts.showInactive || !inactive.size ? list : list.filter((c) => !inactive.has(projectKey(c.machineId, c.project)));
   // Project (and machine) suffix, unless everything shown shares them.
@@ -367,8 +402,10 @@ export function buildSidebarRows(all: Conversation[], opts: SidebarOptions): Sid
     for (const child of tree.children) pushConv(child, `${id}>${child.key}`, depth + 1, undefined, seen);
   };
 
+  // By project, waiting conversations show in place, even in folded nodes;
+  // by date, they would scatter: they are pinned first.
   const waiting = visible.filter(isWaiting);
-  if (waiting.length) {
+  if (waiting.length && opts.grouping === "date") {
     rows.push({ type: "header", id: "h-waiting", label: "Waiting", waiting: true });
     for (const c of waiting) pushConv(c, `w-${c.key}`, 0, suffix(c));
   }
@@ -393,7 +430,10 @@ export function buildSidebarRows(all: Conversation[], opts: SidebarOptions): Sid
       const machineCollapsed = multi && opts.collapsed.has(machineId);
       if (multi) {
         rows.push({ type: "machine", id: machineId, machineId: m.id, name: m.name, count: items.length, waiting: items.filter(isWaiting).length, collapsed: machineCollapsed });
-        if (machineCollapsed) continue;
+        if (machineCollapsed) {
+          for (const c of [...items].sort(compareStable).filter(isWaiting)) pushConv(c, c.key, 1, c.project);
+          continue;
+        }
       }
       const depth = multi ? 1 : 0;
       const projects = sortProjects(projectGroups(items), opts.favorites, opts.projectOrder ?? []);
@@ -408,6 +448,7 @@ export function buildSidebarRows(all: Conversation[], opts: SidebarOptions): Sid
           project: p.label,
           count: p.items.length,
           waiting: p.items.filter(isWaiting).length,
+          unread: p.items.filter((c) => opts.unread?.has(c.key)).length,
           collapsed,
           favorite: opts.favorites.has(p.id),
           depth,
@@ -415,7 +456,21 @@ export function buildSidebarRows(all: Conversation[], opts: SidebarOptions): Sid
           cwd: p.items.find((c) => c.cwd)?.cwd ?? null,
           local: p.items.some((c) => c.local),
         });
-        if (!collapsed) for (const c of [...p.items].sort(compareStable)) pushConv(c, c.key, depth + 1);
+        const sorted = [...p.items].sort(compareStable);
+        if (collapsed) {
+          for (const c of sorted.filter(isWaiting)) pushConv(c, c.key, depth + 1);
+          continue;
+        }
+        const moreId = `more:${p.id}`;
+        const all = !opts.projectLimit || sorted.length <= opts.projectLimit + 1 || opts.collapsed.has(moreId);
+        // Past the limit, the open one and the ones that need a look still show.
+        const shown = all
+          ? sorted
+          : sorted.filter((c, i) => i < opts.projectLimit! || c.key === opts.selected || isWaiting(c) || opts.unread?.has(c.key) || c.attention?.status === "working");
+        for (const c of shown) pushConv(c, c.key, depth + 1);
+        if (sorted.length > shown.length || (all && opts.collapsed.has(moreId))) {
+          rows.push({ type: "more", id: moreId, hidden: sorted.length - shown.length, showing: sorted.length === shown.length, depth: depth + 1 });
+        }
       }
     }
   }
@@ -497,7 +552,7 @@ export function statusLabel(attention: Attention | null): string {
         approval: "Needs approval",
         question: "Question",
         plan: "Plan to review",
-        explicit_question: "Asked you something",
+        explicit_question: "Asked you",
         prompt: "Waiting",
       }[attention.reason];
     case "working":

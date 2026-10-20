@@ -37,6 +37,17 @@ describe("buildTurns", () => {
     expect(files.kind === "files" && files.files[0]).toMatchObject({ path: "/a/health.rs", additions: 2, created: true });
   });
 
+  it("shows a proposed plan outside the folded work", () => {
+    const rows = buildTurns(
+      [user("plan the auth fix"), call("r1", "file_read", "src/auth.rs"), result("r1"), call("p1", "plan", "Plan proposed", { name: "ExitPlanMode", plan: "# Fix\n1. Patch" }), result("p1")],
+      false,
+    );
+    expect(rows.map((r) => r.kind)).toEqual(["user", "work", "proposal"]);
+    const proposal = rows[2];
+    expect(proposal.kind === "proposal" && proposal.call.plan).toBe("# Fix\n1. Patch");
+    expect(proposal.kind === "proposal" && proposal.result?.tool_use_id).toBe("p1");
+  });
+
   it("shows agent launches and keeps the live turn open with the current action", () => {
     const rows = buildTurns(
       [

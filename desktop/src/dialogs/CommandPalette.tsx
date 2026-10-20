@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "../api/client";
 import { useConversations } from "../hooks/useConversations";
 import { AgentIcon, MachineDot, StatusDot } from "../components/ui/Status";
-import { compactAge, projectsOf, searchConversations, statusLabel } from "../lib/conversations";
+import { compactAge, needsYou, projectsOf, searchConversations, statusLabel } from "../lib/conversations";
 import { orderMachines } from "../lib/spaces";
 import { openShell, scriptAction } from "../components/project/ProjectTools";
 import { can, machineList, useMachines } from "../store/machines";
@@ -81,7 +81,7 @@ export function CommandPalette() {
 
   // Only computed while open: thousands of conversations stay cheap.
   const open = ui.paletteOpen;
-  const waiting = useMemo(() => (open ? conversations.filter((c) => c.attention?.status === "blocked") : []), [open, conversations]);
+  const waiting = useMemo(() => (open ? conversations.filter((c) => needsYou(c.attention)) : []), [open, conversations]);
   const found = useMemo(() => (open ? searchConversations(conversations, search) : []), [open, conversations, search]);
   const projects = useMemo(() => {
     if (!open) return [];
