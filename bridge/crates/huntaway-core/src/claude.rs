@@ -86,6 +86,12 @@ pub struct Parser {
     context_tokens: u64,
     model: Option<String>,
     title: Option<String>,
+    permission_mode: Option<String>,
+    /// Session slug, which names its plan file (`plans/<slug>.md`).
+    slug: Option<String>,
+    /// Last text written to a plan file: the plan when `ExitPlanMode`
+    /// carries none and the file is gone.
+    written_plan: Option<String>,
 }
 
 /// Claude models have a 200k context, or 1M when enabled.
@@ -133,6 +139,10 @@ impl LineParser for Parser {
     fn title(&self) -> Option<&str> {
         self.title.as_deref()
     }
+
+    fn permission_mode(&self) -> Option<&str> {
+        self.permission_mode.as_deref()
+    }
 }
 
 /// Claude Code transcript parser.
@@ -160,6 +170,15 @@ impl Parser {
         let timestamp = str_field(&entry, "timestamp");
         let sidechain = entry["isSidechain"].as_bool().unwrap_or(false);
         let is_meta = entry["isMeta"].as_bool().unwrap_or(false);
+        if let Some(slug) = entry["slug"].as_str().filter(|s| !s.is_empty()) {
+            self.slug = Some(slug.to_string());
+        }
+        // Written on each mode change, and on the user messages typed in it.
+        if !sidechain && !self.subagent {
+            if let Some(mode) = entry["permissionMode"].as_str().filter(|m| !m.is_empty()) {
+                self.permission_mode = Some(mode.to_string());
+            }
+        }
 
         match entry["type"].as_str() {
             // After `/compact`, Claude writes the summary of the earlier
@@ -275,7 +294,18 @@ impl Parser {
     fn tool_use(&mut self, block: &Value, uuid: &str, timestamp: &str, sidechain: bool) -> Vec<TimelineItem> {
         let name = str_field(block, "name");
         let tool_use_id = str_field(block, "id");
-        let input = &block["input"];
+        let mut input = block["input"].clone();
+        if name == "Write" && input["file_path"].as_str().is_some_and(|p| p.contains("/plans/") && p.ends_with(".md")) {
+            self.written_plan = input["content"].as_str().map(str::to_string);
+        }
+        let plan = (name == "ExitPlanMode")
+            .then(|| plan_text(&input, &config_dir().join("plans"), self.slug.as_deref(), self.written_plan.as_deref()))
+            .flatten();
+        // Older versions only point at the plan file: show its text anyway.
+        if let Some(plan) = &plan {
+            input["plan"] = Value::String(plan.clone());
+        }
+        let input = &input;
         let mut kind = tool_kind(&name);
         let mut summary = tool_summary(&name, input);
         let agent = (kind == ToolKind::Command).then(|| input["command"].as_str().and_then(agent_launch)).flatten();
@@ -309,6 +339,7 @@ impl Parser {
             sidechain,
             change: file_change(&name, input),
             agent: agent.map(Box::new),
+            plan,
         }];
         match kind {
             ToolKind::Todo => {
@@ -410,6 +441,54 @@ pub fn launch_summary(launch: &crate::model::AgentLaunch) -> String {
         Some(p) => first_line(&format!("{name}: {p}"), 120),
         None => name.to_string(),
     }
+}
+
+/// Max characters kept of a proposed plan.
+const PLAN_MAX: usize = 20_000;
+
+/// Plan of an `ExitPlanMode` call: its `plan` input; else the plan file (from
+/// `planFilePath` or the session `slug`, only read inside `plans`); else the
+/// last text the agent wrote to a plan file. Some versions send no input.
+fn plan_text(input: &Value, plans: &Path, slug: Option<&str>, written: Option<&str>) -> Option<String> {
+    let non_empty = |t: &str| Some(t.trim().to_string()).filter(|t| !t.is_empty());
+    let read = |path: PathBuf| {
+        let plans = plans.canonicalize().ok()?;
+        let path = path.canonicalize().ok().filter(|p| p.starts_with(&plans) && p.extension().is_some_and(|e| e == "md"))?;
+        non_empty(&std::fs::read_to_string(path).ok()?)
+    };
+    let text = input["plan"]
+        .as_str()
+        .and_then(non_empty)
+        .or_else(|| read(PathBuf::from(input["planFilePath"].as_str()?)))
+        .or_else(|| read(plans.join(format!("{}.md", slug?))))
+        .or_else(|| written.and_then(non_empty))?;
+    Some(if text.chars().count() > PLAN_MAX { format!("{}\n\n…", text.chars().take(PLAN_MAX).collect::<String>()) } else { text })
+}
+
+/// Permission mode shown in Claude Code's footer (`⏸ plan mode on (shift+tab
+/// to cycle)`), `default` when the footer shows none. Only the bottom lines
+/// are read: the conversation above may quote these words.
+pub fn screen_permission_mode(screen: &str) -> Option<&'static str> {
+    const INDICATORS: [(&str, &str); 6] = [
+        ("plan mode on", "plan"),
+        ("accept edits on", "acceptEdits"),
+        ("auto mode on", "auto"),
+        ("bypass permissions on", "bypassPermissions"),
+        ("don't ask on", "dontAsk"),
+        ("manual mode on", "default"),
+    ];
+    let bottom: Vec<&str> = screen.lines().rev().map(str::trim).filter(|l| !l.is_empty()).take(4).collect();
+    if bottom.is_empty() {
+        return None;
+    }
+    for line in &bottom {
+        let line = line.to_lowercase();
+        if let Some((_, mode)) = INDICATORS.iter().find(|(text, _)| line.contains(text)) {
+            return Some(mode);
+        }
+    }
+    // The input box is there but no mode is shown: the default one.
+    bottom.iter().any(|l| l.starts_with('❯') || l.starts_with('─')).then_some("default")
 }
 
 /// Max characters kept per side of a file change.
@@ -625,6 +704,55 @@ mod tests {
         assert_eq!(changes[0].unwrap().new, "let x = 2");
         assert!(changes[1].unwrap().old.is_none());
         assert!(changes[2].is_none());
+    }
+
+    #[test]
+    fn proposed_plan_carries_its_text() {
+        let (tail, items) = tail_with(&[
+            r#"{"type":"permission-mode","permissionMode":"plan","sessionId":"s"}"#,
+            r##"{"type":"assistant","uuid":"p","timestamp":"t","message":{"content":[{"type":"tool_use","id":"tp","name":"ExitPlanMode","input":{"plan":"# Fix login\n\n1. Patch","planFilePath":"/x.md"}}]}}"##,
+        ]);
+        assert!(matches!(&items[0], TimelineItem::ToolCall { kind: ToolKind::Plan, plan: Some(p), .. } if p == "# Fix login\n\n1. Patch"));
+        assert_eq!(tail.pending_tool_calls()[0].input["plan"], "# Fix login\n\n1. Patch");
+        assert_eq!(tail.permission_mode(), Some("plan"));
+    }
+
+    #[test]
+    fn plan_falls_back_to_its_file_inside_the_plans_dir() {
+        let dir = std::env::temp_dir().join(format!("huntaway-plans-{}", std::process::id()));
+        let plans = dir.join("plans");
+        std::fs::create_dir_all(&plans).unwrap();
+        std::fs::write(plans.join("swan.md"), "# From file\n").unwrap();
+        std::fs::write(dir.join("outside.md"), "secret").unwrap();
+        let input = |path: &Path| serde_json::json!({ "plan": "", "planFilePath": path.to_str().unwrap() });
+        assert_eq!(plan_text(&input(&plans.join("swan.md")), &plans, None, None).as_deref(), Some("# From file"));
+        assert_eq!(plan_text(&input(&dir.join("outside.md")), &plans, None, None), None);
+        assert_eq!(plan_text(&input(&plans.join("../outside.md")), &plans, None, None), None);
+        // No input at all: the session's plan file, then what was written.
+        let empty = serde_json::json!({});
+        assert_eq!(plan_text(&empty, &plans, Some("swan"), Some("old")).as_deref(), Some("# From file"));
+        assert_eq!(plan_text(&empty, &plans, Some("gone"), Some("# Written")).as_deref(), Some("# Written"));
+        assert_eq!(plan_text(&empty, &plans, Some("../outside"), None), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn permission_mode_follows_the_latest_entry() {
+        let (tail, _) = tail_with(&[
+            r#"{"type":"user","uuid":"u","timestamp":"t","permissionMode":"default","message":{"content":"hi"}}"#,
+            r#"{"type":"user","uuid":"s","timestamp":"t","isSidechain":true,"permissionMode":"bypassPermissions","message":{"content":"sub"}}"#,
+            r#"{"type":"permission-mode","permissionMode":"auto","sessionId":"s"}"#,
+        ]);
+        assert_eq!(tail.permission_mode(), Some("auto"));
+    }
+
+    #[test]
+    fn reads_the_permission_mode_from_the_footer() {
+        let screen = "● Done, plan mode on now.\n\n────────\n❯ \n────────\n  ⏸ plan mode on (shift+tab to cycle)\n";
+        assert_eq!(screen_permission_mode(screen), Some("plan"));
+        assert_eq!(screen_permission_mode("x\n────\n❯ \n────\n  ⏵⏵ auto mode on (shift+tab to cycle)"), Some("auto"));
+        assert_eq!(screen_permission_mode("● plan mode on\n────\n❯ \n────\n  ? for shortcuts"), Some("default"));
+        assert_eq!(screen_permission_mode(""), None);
     }
 
     #[test]

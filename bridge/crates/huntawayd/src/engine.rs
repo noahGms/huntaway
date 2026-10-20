@@ -241,6 +241,11 @@ struct AgentEntry {
     needs_screen: bool,
     /// Last time the screen was read for the menu options.
     screen_read_at: Option<Instant>,
+    /// Permission mode last written to the transcript.
+    transcript_mode: Option<String>,
+    /// Mode read from the footer after Huntaway changed it; wins until the
+    /// transcript reports another one.
+    screen_mode: Option<String>,
     interrupted_by_huntaway: bool,
     notified_blocked: bool,
     /// A turn ended at this instant; notify `done` once settled.
@@ -776,6 +781,7 @@ impl Engine {
             parent_id: None,
             children: Vec::new(),
             queued: Vec::new(),
+            permission_mode: None,
         };
         let mut entry = AgentEntry {
             view,
@@ -793,6 +799,8 @@ impl Engine {
             screen_options: Vec::new(),
             needs_screen: true,
             screen_read_at: None,
+            transcript_mode: None,
+            screen_mode: None,
             interrupted_by_huntaway: false,
             // Don't notify for states that existed before the daemon saw the agent.
             notified_blocked: true,
@@ -814,7 +822,7 @@ impl Engine {
         self.apply_items(&mut entry, history, false);
         entry.pending_done = None;
         recompute(&mut entry);
-        entry.notified_blocked = matches!(entry.view.attention, Attention::Blocked(_));
+        entry.notified_blocked = entry.view.attention.needs_you();
         entry
     }
 
@@ -990,7 +998,9 @@ impl Engine {
                 // Waiting messages stay until sent or removed.
                 entry.view.queued.retain(|q| q.state == "waiting" || now_secs.saturating_sub(q.at) < QUEUED_MAX_AGE_SECS);
                 // The agent is free: type the next waiting message.
-                let free = matches!(entry.status.as_str(), "idle" | "done") && entry.raw_status == entry.status && !matches!(entry.view.attention, Attention::Blocked(_));
+                let free = matches!(entry.status.as_str(), "idle" | "done")
+                    && entry.raw_status == entry.status
+                    && !entry.view.attention.needs_you();
                 if is_busy(&entry.status) {
                     entry.worked_since_delivery = true;
                 }
@@ -1006,7 +1016,7 @@ impl Engine {
 
                 // Notifications. A turn ending on a question is notified as
                 // a finished turn, not as a prompt on screen.
-                let blocked = matches!(entry.view.attention, Attention::Blocked(r) if r != BlockedReason::ExplicitQuestion);
+                let blocked = entry.view.attention.needs_you();
                 match (blocked, entry.blocked_since) {
                     (true, None) => {
                         entry.blocked_since = Some(Instant::now());
@@ -1340,6 +1350,56 @@ impl Engine {
         Ok(())
     }
 
+    /// Switches a Claude agent to permission mode `mode` with Shift+Tab,
+    /// reading the footer after each press. Returns the mode reached.
+    pub async fn set_mode(&self, id: &str, mode: &str) -> ActionResult<String> {
+        if !PERMISSION_MODES.contains(&mode) {
+            return Err(ActionError::new(400, "invalid_mode", format!("unknown mode {mode}")));
+        }
+        let (client, pane, kind) = self.target(id)?;
+        if kind != "claude" {
+            return Err(ActionError::new(400, "unsupported", "only Claude agents have permission modes"));
+        }
+        if self.fresh_status(&client, &pane).await? == "blocked" {
+            return Err(ActionError::new(409, "agent_blocked", "the agent is waiting for an answer"));
+        }
+        let read = || async {
+            let screen = client.agent_read(&pane, ReadSource::Visible, None).await?;
+            claude::screen_permission_mode(&screen)
+                .map(str::to_string)
+                .ok_or_else(|| ActionError::new(409, "mode_unknown", "can't read the mode on screen"))
+        };
+        let start = read().await?;
+        let mut current = start.clone();
+        // Shift+Tab cycles through the enabled modes: stop once back at the start.
+        for _ in 0..PERMISSION_MODES.len() {
+            if current == mode {
+                break;
+            }
+            client.agent_send_keys(&pane, &["shift+tab"]).await?;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            current = read().await?;
+            if current == start {
+                break;
+            }
+        }
+        let view = {
+            let mut state = self.state.lock().unwrap();
+            state.agents.get_mut(id).map(|entry| {
+                entry.screen_mode = Some(current.clone());
+                entry.view.permission_mode = Some(current.clone());
+                entry.view.clone()
+            })
+        };
+        if let Some(view) = view {
+            self.emit("agent.updated", Some(id), serde_json::to_value(view).unwrap());
+        }
+        if current != mode {
+            return Err(ActionError::new(409, "mode_unavailable", format!("{mode} mode isn't available in this Claude session")));
+        }
+        Ok(current)
+    }
+
     /// Raw input (permission `agents.input`).
     pub async fn input(&self, id: &str, text: Option<&str>, keys: &[String]) -> ActionResult<()> {
         let (client, pane, _) = self.target(id)?;
@@ -1627,6 +1687,9 @@ pub(crate) fn locate_transcript(info: &AgentInfo) -> Option<TranscriptTail> {
     }
 }
 
+/// Claude permission modes Huntaway can switch to.
+const PERMISSION_MODES: [&str; 5] = ["default", "acceptEdits", "plan", "auto", "bypassPermissions"];
+
 /// Agent kinds whose conversation Huntaway can read.
 fn has_adapter(kind: &str) -> bool {
     matches!(kind, "claude" | "codex")
@@ -1637,7 +1700,7 @@ fn recompute(entry: &mut AgentEntry) {
     // Borrowed out of the entry instead of copied: this runs every tick.
     let mut recent_items = std::mem::take(&mut entry.recent);
     let recent: &[TimelineItem] = recent_items.make_contiguous();
-    let (main_pending, usage, title, todo) = match entry.tail.as_ref() {
+    let (main_pending, usage, title, todo, mode) = match entry.tail.as_ref() {
         Some(tails) => {
             let tails = tails.lock().unwrap();
             let t = &tails.main;
@@ -1646,10 +1709,16 @@ fn recompute(entry: &mut AgentEntry) {
                 t.usage(),
                 t.title().map(str::to_string),
                 t.todos().iter().find(|t| t.status == "in_progress").map(|t| t.content.clone()),
+                t.permission_mode().map(str::to_string),
             )
         }
-        None => (None, None, None, None),
+        None => (None, None, None, None, None),
     };
+    if mode.is_some() && mode != entry.transcript_mode {
+        entry.transcript_mode = mode;
+        entry.screen_mode = None;
+    }
+    entry.view.permission_mode = entry.screen_mode.clone().or_else(|| entry.transcript_mode.clone());
     // A permission asked by a sub-agent: show its call, not the `Task` that started it.
     let pending = match main_pending {
         Some(p) if p.kind == ToolKind::Subagent => entry.subagent_pending.clone().or(Some(p)),
@@ -1685,8 +1754,10 @@ fn recompute(entry: &mut AgentEntry) {
         entry.view.summary = summary;
     }
 
+    // A turn ending on a plain-text question has no menu on screen: the
+    // answer is a message, nothing to show as a prompt.
     entry.view.interaction = match attention {
-        Attention::Blocked(reason) => {
+        Attention::Blocked(reason) if reason != BlockedReason::ExplicitQuestion => {
             let questions = pending
                 .as_ref()
                 .and_then(|p| {
@@ -1977,6 +2048,9 @@ mod tests {
         let n = build_notification(&entry, "done");
         assert_eq!(n.title, "Claude has a question");
         assert!(n.interaction_id.is_none());
+        // Not a prompt: no card to answer, queued messages may go.
+        assert!(entry.view.interaction.is_none());
+        assert!(!entry.view.attention.needs_you());
 
         // The same question two hours later no longer counts.
         let old = dir.join("old.jsonl");

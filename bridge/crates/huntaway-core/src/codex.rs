@@ -397,7 +397,7 @@ impl Parser {
                 timestamp: timestamp.clone(),
             },
         );
-        vec![TimelineItem::ToolCall { uuid, timestamp, tool_use_id: call_id, name, kind, summary, sidechain: false, change, agent: agent.map(Box::new) }]
+        vec![TimelineItem::ToolCall { uuid, timestamp, tool_use_id: call_id, name, kind, summary, sidechain: false, change, agent: agent.map(Box::new), plan: None }]
     }
 }
 

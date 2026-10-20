@@ -37,6 +37,10 @@ pub trait LineParser: Send {
     fn title(&self) -> Option<&str> {
         None
     }
+    /// Permission mode the agent runs in (Claude), if known.
+    fn permission_mode(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Incremental reader: remembers the byte offset and buffers partial lines.
@@ -113,6 +117,10 @@ impl TranscriptTail {
 
     pub fn title(&self) -> Option<&str> {
         self.parser.title()
+    }
+
+    pub fn permission_mode(&self) -> Option<&str> {
+        self.parser.permission_mode()
     }
 
     /// Bytes read so far.

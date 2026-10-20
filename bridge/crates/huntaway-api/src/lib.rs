@@ -135,6 +135,10 @@ pub enum TimelineItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         agent: Option<Box<AgentLaunch>>,
+        /// Markdown of a proposed plan (Claude `ExitPlanMode`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        plan: Option<String>,
     },
     /// Reasoning the agent shows (Claude thinking, Codex reasoning summary).
     Thinking {
@@ -249,6 +253,8 @@ impl Attention {
     /// Sort key for the Inbox: lower comes first.
     pub fn priority(self) -> u8 {
         match self {
+            // A turn ending on a question is the user's turn, not a prompt.
+            Attention::Blocked(BlockedReason::ExplicitQuestion) => 1,
             Attention::Blocked(_) => 0,
             Attention::Working => 2,
             Attention::Done => 3,
@@ -273,6 +279,12 @@ impl Attention {
 
     pub fn is_blocked(self) -> bool {
         matches!(self, Attention::Blocked(_))
+    }
+
+    /// Waiting on a prompt on screen: nothing moves until the user answers.
+    /// A turn that ended on a plain-text question does not count.
+    pub fn needs_you(self) -> bool {
+        matches!(self, Attention::Blocked(r) if r != BlockedReason::ExplicitQuestion)
     }
 }
 
@@ -448,6 +460,10 @@ pub struct AgentView {
     /// (the agent was busy, or has not written them yet), oldest first.
     #[serde(default)]
     pub queued: Vec<QueuedMessage>,
+    /// Claude permission mode: `default`, `acceptEdits`, `plan`, `auto`,
+    /// `bypassPermissions` or `dontAsk`, when known.
+    #[serde(default)]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -51,6 +51,7 @@ pub fn router(state: Shared) -> Router {
         .route("/v1/agents/{id}/choice", post(choice))
         .route("/v1/agents/{id}/deny", post(deny))
         .route("/v1/agents/{id}/input", post(input))
+        .route("/v1/agents/{id}/mode", post(set_mode))
         .route("/v1/agents/{id}/screen", get(screen))
         .route("/v1/agents/{id}/terminal", get(terminal))
         .route("/v1/agents/{id}/files", get(search_files))
@@ -327,6 +328,18 @@ async fn deny(State(state): State<Shared>, auth: Auth, Path(id): Path<String>, J
     auth.require("agents.approve")?;
     let message_sent = state.engine.deny(&id, body.text.as_deref(), body.interaction_id.as_deref()).await?;
     Ok(Json(json!({ "ok": true, "message_sent": message_sent })))
+}
+
+#[derive(Deserialize)]
+struct ModeBody {
+    mode: String,
+}
+
+/// Switching to auto or bypass skips approvals: same permission as answering them.
+async fn set_mode(State(state): State<Shared>, auth: Auth, Path(id): Path<String>, Json(body): Json<ModeBody>) -> ApiResult<Json<Value>> {
+    auth.require("agents.approve")?;
+    let mode = state.engine.set_mode(&id, &body.mode).await?;
+    Ok(Json(json!({ "ok": true, "mode": mode })))
 }
 
 #[derive(Deserialize)]
