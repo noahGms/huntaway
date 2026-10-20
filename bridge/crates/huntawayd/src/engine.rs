@@ -33,6 +33,9 @@ const DISCOVERY_EVERY: Duration = Duration::from_secs(3);
 const RECENT_ITEMS: usize = 80;
 /// Give up on a `done` notification if the agent keeps working this long after a turn end.
 const DONE_WAIT_MAX: Duration = Duration::from_secs(60);
+/// An agent that owes a reply counts as working for at most this long after
+/// the message it answers (crash, API error written nowhere).
+const REPLY_WAIT_MAX_SECS: u64 = 5 * 60;
 /// Delay before notifying `blocked`, so the pending tool line is read first.
 const BLOCKED_NOTIFY_DELAY: Duration = Duration::from_millis(800);
 /// An agent that vanishes within this delay after being busy counts as crashed.
@@ -1000,6 +1003,7 @@ impl Engine {
                 // The agent is free: type the next waiting message.
                 let free = matches!(entry.status.as_str(), "idle" | "done")
                     && entry.raw_status == entry.status
+                    && entry.view.attention != Attention::Working
                     && !entry.view.attention.needs_you();
                 if is_busy(&entry.status) {
                     entry.worked_since_delivery = true;
@@ -1725,6 +1729,13 @@ fn recompute(entry: &mut AgentEntry) {
         other => other,
     };
     let mut attention = classify(&entry.status, pending.as_ref().map(|p| p.kind), recent);
+    // Herdr reads the screen: a long answer being written can look idle.
+    // The transcript knows the agent still owes a reply.
+    if matches!(attention, Attention::Idle | Attention::Done)
+        && owes_reply(recent).and_then(codex::epoch_of).is_some_and(|t| (now_ms() / 1000).saturating_sub(t) < REPLY_WAIT_MAX_SECS)
+    {
+        attention = Attention::Working;
+    }
     // Headless servers report `idle` instead of `done`: a finished turn means done.
     if attention == Attention::Idle && turn_ended(recent) {
         attention = Attention::Done;
@@ -1796,6 +1807,23 @@ fn turn_ended(recent: &[TimelineItem]) -> bool {
         }
     }
     false
+}
+
+/// Date of the message the agent has not answered yet: the main thread ends
+/// on the user's message or on a tool result.
+fn owes_reply(recent: &[TimelineItem]) -> Option<&str> {
+    for item in recent.iter().rev() {
+        match item {
+            TimelineItem::UserMessage { timestamp, .. } | TimelineItem::ToolResult { timestamp, .. } => return Some(timestamp),
+            TimelineItem::AssistantMessage { sidechain: true, .. }
+            | TimelineItem::ToolCall { sidechain: true, .. }
+            | TimelineItem::Thinking { .. }
+            | TimelineItem::TodosUpdated { .. }
+            | TimelineItem::AwaySummary { .. } => {}
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Terminal title as a last-resort summary, unless it is just the launch
@@ -2057,6 +2085,52 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap().replace(&now, &codex::rfc3339_of(now_ms() / 1000 - 7200));
         std::fs::write(&old, text).unwrap();
         assert_eq!(entry_with_transcript(&engine(), "done", &old).view.attention, Attention::Idle);
+    }
+
+    #[test]
+    fn an_unanswered_message_keeps_the_agent_working() {
+        let dir = temp_dir("owes");
+        let now = codex::rfc3339_of(now_ms() / 1000);
+        let attention = |name: &str, status: &str, lines: &[&str], at: &str| {
+            let path = dir.join(format!("{name}.jsonl"));
+            std::fs::write(&path, lines.iter().map(|l| l.replace("NOW", at) + "\n").collect::<String>()).unwrap();
+            entry_with_transcript(&engine(), status, &path).view.attention
+        };
+        let user = r#"{"type":"user","uuid":"u1","timestamp":"NOW","message":{"content":"write a long plan"}}"#;
+        let call = r#"{"type":"assistant","uuid":"a1","timestamp":"NOW","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/a"}}]}}"#;
+        let result = r#"{"type":"user","uuid":"u2","timestamp":"NOW","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#;
+        let answer = r#"{"type":"assistant","uuid":"a2","timestamp":"NOW","message":{"content":[{"type":"text","text":"Here is the plan."}]}}"#;
+        let interrupted = r#"{"type":"user","uuid":"u3","timestamp":"NOW","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
+
+        // Herdr says idle while the answer is being written.
+        assert_eq!(attention("user", "idle", &[user], &now), Attention::Working);
+        assert_eq!(attention("result", "done", &[user, call, result], &now), Attention::Working);
+        assert_eq!(attention("answered", "idle", &[user, answer], &now), Attention::Idle);
+        assert_ne!(attention("interrupted", "idle", &[user, interrupted], &now), Attention::Working);
+        // A prompt on screen still wins.
+        assert!(matches!(attention("blocked", "blocked", &[user], &now), Attention::Blocked(_)));
+        // Nothing written for too long: trust Herdr again.
+        let old = codex::rfc3339_of(now_ms() / 1000 - REPLY_WAIT_MAX_SECS - 10);
+        assert_eq!(attention("old", "idle", &[user], &old), Attention::Idle);
+    }
+
+    #[test]
+    fn waiting_messages_wait_for_the_reply_being_written() {
+        let engine = engine();
+        let client = Client::new("/nonexistent/herdr.sock");
+        let id = "default:w1:p1";
+        engine.reconcile(&session(), &client, vec![agent_info("idle")], None, &[]);
+        {
+            let mut state = engine.state.lock().unwrap();
+            let entry = state.agents.get_mut(id).unwrap();
+            let user = TimelineItem::UserMessage { uuid: "u1".into(), timestamp: codex::rfc3339_of(now_ms() / 1000), text: "go".into() };
+            entry.recent.push_back(user);
+            entry.raw_since = Instant::now() - SETTLE;
+            let q = QueuedMessage { id: "q1".into(), text: "next".into(), at: now_ms() / 1000, state: "waiting".into() };
+            entry.view.queued.push(q);
+        }
+        assert!(engine.tick().2.is_empty(), "nothing typed while the answer is written");
+        assert_eq!(engine.state.lock().unwrap().agents[id].view.attention, Attention::Working);
     }
 
     #[test]
